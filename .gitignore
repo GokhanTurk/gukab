@@ -1,0 +1,42 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+# Cargo.lock COMMIT EDİLİR (binary proje - reproducible build)
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# VSCode (kişisel ayarları paylaşma, ama extension/task önerilerini paylaş)
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Editor swap/temp dosyaları
+*.swp
+*.swo
+*~
+
+# gukab gerçek config & secret dosyaları - ASLA commit edilmez
+config/hosts.toml
+config/credentials.toml
+*.local.toml
+*.secret.toml
+
+# Loglar
+*.log
+
+# Env dosyaları
+.env
+.env.local
+
+# Claude Code - kişisel/yerel dosyalar (paylaşılmaz)
+.claude/settings.local.json
+.claude/agent-memory/
+# Local AI tooling config — not part of the project
+.claude/

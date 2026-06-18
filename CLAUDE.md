@@ -77,9 +77,19 @@ does trust-on-first-use — it records each server's SHA-256 fingerprint in
 - `Ctrl+E`: open selected host in edit form (`Shift+Enter` also works only in terminals
   that report the modifier, e.g. kitty keyboard protocol — most terminals send plain Enter,
   so `Ctrl+E` is the reliable binding)
-- `Ctrl+N`: new host form
+- `Ctrl+N`: add-host form (the form title reads **Add Host** for new, **Edit Host** when
+  editing — both use the same `AppMode::Editing`, distinguished by `original_idx`)
+- `Ctrl+D`: delete the selected host (a `ConfirmDelete` prompt; `y`/Enter confirms, `n`/Esc
+  cancels) — removes it from `hosts.toml`
+- `Ctrl+↑` / `Ctrl+↓`: move the selected host up/down **within its group**, persisted to
+  `hosts.toml` (disabled while a search filter is active, since the list is then ranked by
+  relevance not stored order)
 - `Ctrl+K`: add a standalone keyring credential (ref + password) — used for secrets that
   expect rules reference (e.g. an enable password), independent of any host
+
+The host list renders the name column at a fixed width (longest visible name, clamped to
+12–26 cols, truncated with `…`) so the `user@host:port` column stays aligned regardless of
+name length ([src/tui/ui.rs](src/tui/ui.rs) `fit_width`).
 
 ## Host Groups
 

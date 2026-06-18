@@ -107,6 +107,13 @@ pub enum AppMode {
         /// Caret position (char index) within the focused field.
         cursor: usize,
     },
+    /// Confirmation prompt before deleting a host.
+    ConfirmDelete {
+        /// Index into `App.hosts` of the host to delete.
+        idx: usize,
+        /// Host name, shown in the prompt.
+        name: String,
+    },
 }
 
 /// A visible line in the host list: either a group header or a host beneath it.
@@ -370,6 +377,7 @@ impl App {
             AppMode::Normal => self.update_normal(key),
             AppMode::Editing { .. } => self.update_editing(key),
             AppMode::Credential { .. } => self.update_credential(key),
+            AppMode::ConfirmDelete { .. } => self.update_confirm_delete(key),
         }
     }
 
@@ -378,6 +386,14 @@ impl App {
             KeyCode::Char('q') if key.modifiers.is_empty() => self.should_quit = true,
             KeyCode::Esc => self.should_quit = true,
 
+            // Ctrl+↑/↓ reorder the selected host within its group (persisted).
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selected_host(true);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selected_host(false);
+            }
+
             KeyCode::Down => {
                 if !self.rows.is_empty() {
                     self.selected = (self.selected + 1).min(self.rows.len() - 1);
@@ -385,6 +401,16 @@ impl App {
             }
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
+            }
+
+            // Ctrl+D deletes the selected host (with confirmation).
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                if let Some(idx) = self.selected_host_idx() {
+                    self.mode = AppMode::ConfirmDelete {
+                        idx,
+                        name: self.hosts[idx].name.clone(),
+                    };
+                }
             }
 
             KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
@@ -443,6 +469,72 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    fn update_confirm_delete(&mut self, key: KeyEvent) {
+        let AppMode::ConfirmDelete { idx, .. } = self.mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                self.delete_host(idx);
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    /// Remove the host at `idx`, persist, and rebuild the list.
+    fn delete_host(&mut self, idx: usize) {
+        if idx >= self.hosts.len() {
+            return;
+        }
+        let name = self.hosts.remove(idx).name;
+        if let Err(e) = crate::config::save_hosts(&self.hosts, &self.groups) {
+            self.set_status(format!("Save failed: {e}"));
+        } else {
+            self.set_status(format!("Deleted host {name}"));
+        }
+        self.apply_filter();
+    }
+
+    /// Move the selected host one slot up/down within its own group (and persist).
+    /// Reordering is disabled while a search filter is active, since the displayed
+    /// order is then by relevance rather than stored order.
+    fn move_selected_host(&mut self, up: bool) {
+        if !self.filter.is_empty() {
+            self.set_status("Clear the search to reorder hosts".into());
+            return;
+        }
+        let Some(cur) = self.selected_host_idx() else {
+            return;
+        };
+        let group = self.hosts[cur].group.clone();
+        // Nearest host above/below that shares the same group.
+        let target = if up {
+            (0..cur).rev().find(|&j| self.hosts[j].group == group)
+        } else {
+            ((cur + 1)..self.hosts.len()).find(|&j| self.hosts[j].group == group)
+        };
+        let Some(t) = target else {
+            return;
+        };
+        self.hosts.swap(cur, t);
+        if let Err(e) = crate::config::save_hosts(&self.hosts, &self.groups) {
+            self.set_status(format!("Save failed: {e}"));
+        }
+        self.apply_filter();
+        // Keep the selection on the moved host (now at index `t`).
+        if let Some(pos) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Host { idx, .. } if *idx == t))
+        {
+            self.selected = pos;
         }
     }
 

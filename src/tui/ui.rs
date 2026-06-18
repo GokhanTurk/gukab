@@ -47,14 +47,15 @@ pub fn draw(f: &mut Frame, app: &App) {
             ref draft,
             focused_field,
             cursor,
-            ..
-        } => draw_edit_form(f, draft, focused_field, cursor, area),
+            original_idx,
+        } => draw_edit_form(f, draft, focused_field, cursor, original_idx.is_none(), area),
         AppMode::Credential {
             ref reference,
             ref password,
             focused,
             cursor,
         } => draw_credential_form(f, reference, password, focused, cursor, area),
+        AppMode::ConfirmDelete { ref name, .. } => draw_confirm_delete(f, name, area),
         AppMode::Normal => {}
     }
 }
@@ -73,8 +74,40 @@ fn draw_search(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Min/max width of the host-name column (kept fixed per render for alignment).
+const NAME_MIN: usize = 12;
+const NAME_CAP: usize = 26;
+
+/// Fit `s` into exactly `w` columns: truncate long values with `…`, pad short
+/// ones with spaces, so every `user@host:port` lines up regardless of name length.
+fn fit_width(s: &str, w: usize) -> String {
+    let n = s.chars().count();
+    if n > w {
+        let mut out: String = s.chars().take(w.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    } else {
+        let mut out = s.to_string();
+        out.push_str(&" ".repeat(w - n));
+        out
+    }
+}
+
 fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
     use crate::tui::app::Row;
+
+    // Size the name column to the longest visible host name (clamped), so the
+    // address column is aligned even when some names are much longer than others.
+    let name_w = app
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Host { idx, .. } => Some(app.hosts[*idx].name.chars().count()),
+            Row::Group { .. } => None,
+        })
+        .max()
+        .unwrap_or(NAME_MIN)
+        .clamp(NAME_MIN, NAME_CAP);
 
     let items: Vec<ListItem> = app
         .rows
@@ -108,7 +141,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
                 };
                 ListItem::new(Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(format!("{:<18}", h.name), Style::default().fg(Color::Cyan)),
+                    Span::styled(fit_width(&h.name, name_w), Style::default().fg(Color::Cyan)),
                     Span::raw(format!("  {}@{}", h.username, h.hostname)),
                     Span::styled(format!(":{}", h.port), Style::default().fg(Color::DarkGray)),
                 ]))
@@ -134,7 +167,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(msg) => msg.as_str(),
-        None => " ↑↓: navigate  Enter: connect / toggle group  ^E: edit  ^N: new  ^K: credential  q/Esc: quit",
+        None => " ↑↓ nav  ^↑↓ move  Enter connect  ^N add  ^E edit  ^D delete  ^K cred  q quit",
     };
     let widget = Paragraph::new(text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -146,6 +179,7 @@ fn draw_edit_form(
     draft: &crate::tui::app::EditDraft,
     focused_field: usize,
     cursor: usize,
+    is_new: bool,
     area: Rect,
 ) {
     let popup_width = area.width.min(60);
@@ -156,9 +190,10 @@ fn draw_edit_form(
 
     f.render_widget(Clear, popup_area);
 
+    let title = if is_new { " Add Host " } else { " Edit Host " };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Edit Host ")
+        .title(title)
         .title_alignment(Alignment::Center);
     f.render_widget(block, popup_area);
 
@@ -210,6 +245,37 @@ fn draw_edit_form(
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::DarkGray));
     f.render_widget(hint, rows[EDIT_FIELD_COUNT]);
+}
+
+/// Small centered confirmation popup for deleting a host.
+fn draw_confirm_delete(f: &mut Frame, name: &str, area: Rect) {
+    let popup_width = area.width.min(54);
+    let popup_height = 5u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete host ")
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Delete \"{name}\"?"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "y/Enter: delete    n/Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let body = Paragraph::new(lines).alignment(Alignment::Center);
+    f.render_widget(body, inner);
 }
 
 fn draw_credential_form(

@@ -4,6 +4,8 @@ A terminal-only (TUI) SSH connection manager for network devices. Built in Rust
 with `ratatui` + `russh` (pure-Rust SSH, no OpenSSL). Targets Arch Linux x86_64
 and macOS (Apple Silicon + Intel).
 
+![gukab demo](docs/demo.gif)
+
 - **Fuzzy host search** — type a few characters in any order (`r3` finds
   `router-03`); the closest match floats to the top.
 - **Host groups** — collapsible, per-group icons, indented members.

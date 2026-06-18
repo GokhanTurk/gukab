@@ -1,0 +1,114 @@
+# Sample (fake) data used only for the README demo recording.
+# No real hosts, IPs, or credentials.
+
+[[groups]]
+name = "Core"
+icon = ""
+
+[[groups]]
+name = "Distribution"
+icon = ""
+
+[[groups]]
+name = "Access"
+icon = ""
+
+[[groups]]
+name = "Servers"
+icon = ""
+
+[[hosts]]
+name = "core-switch-01"
+hostname = "10.0.0.1"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Core"
+
+[[hosts]]
+name = "core-switch-02"
+hostname = "10.0.0.2"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Core"
+
+[[hosts]]
+name = "router-01"
+hostname = "10.0.0.11"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Core"
+
+[[hosts]]
+name = "router-02"
+hostname = "10.0.0.12"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Core"
+
+[[hosts]]
+name = "router-03"
+hostname = "10.0.0.13"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Core"
+
+[[hosts]]
+name = "dist-sw-01"
+hostname = "10.0.2.1"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Distribution"
+
+[[hosts]]
+name = "dist-sw-02"
+hostname = "10.0.2.2"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Distribution"
+
+[[hosts]]
+name = "access-sw-01"
+hostname = "10.0.1.21"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Access"
+
+[[hosts]]
+name = "access-sw-02"
+hostname = "10.0.1.22"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Access"
+
+[[hosts]]
+name = "access-sw-03"
+hostname = "10.0.1.23"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Access"
+
+[[hosts]]
+name = "srv-web-01"
+hostname = "10.0.3.10"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Servers"
+
+[[hosts]]
+name = "srv-db-01"
+hostname = "10.0.3.20"
+port = 22
+username = "netadmin"
+credential_ref = "demo"
+group = "Servers"

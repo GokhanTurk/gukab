@@ -112,39 +112,54 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .rows
         .iter()
-        .map(|row| match row {
-            Row::Group {
-                name,
-                icon,
-                collapsed,
-            } => {
-                let arrow = if *collapsed { "▸" } else { "▾" };
-                let head = if icon.is_empty() {
-                    format!("{arrow} {name}")
-                } else {
-                    format!("{arrow} {icon}  {name}")
-                };
-                ListItem::new(Line::from(Span::styled(
-                    head,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )))
-            }
-            Row::Host { idx, icon } => {
-                let h = &app.hosts[*idx];
-                // Indent hosts under their group; show the group icon when present.
-                let prefix = if icon.is_empty() {
-                    "   ".to_string()
-                } else {
-                    format!("   {icon} ")
-                };
-                ListItem::new(Line::from(vec![
-                    Span::raw(prefix),
-                    Span::styled(fit_width(&h.name, name_w), Style::default().fg(Color::Cyan)),
-                    Span::raw(format!("  {}@{}", h.username, h.hostname)),
-                    Span::styled(format!(":{}", h.port), Style::default().fg(Color::DarkGray)),
-                ]))
+        .enumerate()
+        .map(|(i, row)| {
+            // The selected row drops its per-span colors so the high-contrast
+            // highlight foreground (set below) shows through — readable on the
+            // highlight background in every terminal, not just some palettes.
+            let selected = i == app.selected;
+            match row {
+                Row::Group {
+                    name,
+                    icon,
+                    collapsed,
+                } => {
+                    let arrow = if *collapsed { "▸" } else { "▾" };
+                    let head = if icon.is_empty() {
+                        format!("{arrow} {name}")
+                    } else {
+                        format!("{arrow} {icon}  {name}")
+                    };
+                    let style = if selected {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    };
+                    ListItem::new(Line::from(Span::styled(head, style)))
+                }
+                Row::Host { idx, icon } => {
+                    let h = &app.hosts[*idx];
+                    // Indent hosts under their group; show the group icon when present.
+                    let prefix = if icon.is_empty() {
+                        "   ".to_string()
+                    } else {
+                        format!("   {icon} ")
+                    };
+                    let (name_style, port_style) = if selected {
+                        (Style::default(), Style::default())
+                    } else {
+                        (
+                            Style::default().fg(Color::Cyan),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::raw(prefix),
+                        Span::styled(fit_width(&h.name, name_w), name_style),
+                        Span::raw(format!("  {}@{}", h.username, h.hostname)),
+                        Span::styled(format!(":{}", h.port), port_style),
+                    ]))
+                }
             }
         })
         .collect();
@@ -156,9 +171,17 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
         Some(app.selected)
     });
 
+    // Explicit RGB highlight (not a named color) so contrast is identical across
+    // terminals: bright white text on a vivid blue bar. The selected row's spans
+    // carry no fg of their own (see above), so this foreground always wins.
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Hosts "))
-        .highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Rgb(255, 255, 255))
+                .bg(Color::Rgb(45, 95, 210))
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, area, &mut list_state);

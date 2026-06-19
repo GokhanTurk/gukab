@@ -18,7 +18,7 @@ use ratatui::{
 use tokio::sync::mpsc::Receiver;
 
 use crate::config::Macro;
-use crate::fuzzy::fuzzy_match;
+use crate::fuzzy::fuzzy_score;
 
 /// Outcome of the picker.
 pub enum Pick {
@@ -119,16 +119,25 @@ async fn run(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick 
     }
 }
 
-/// Macros whose key or command fuzzily matches the query (all, if empty).
+/// Macros matching the query, ranked best-first (same relevance scoring as the
+/// host list). A match on the `key` outranks a match in the `send` body.
 fn filter<'a>(macros: &'a [Macro], query: &str) -> Vec<&'a Macro> {
     if query.is_empty() {
         return macros.iter().collect();
     }
     let q = query.to_lowercase();
-    macros
+    let mut scored: Vec<(i32, &Macro)> = macros
         .iter()
-        .filter(|m| fuzzy_match(&q, &m.key.to_lowercase()) || fuzzy_match(&q, &m.send.to_lowercase()))
-        .collect()
+        .filter_map(|m| {
+            let key_s = fuzzy_score(&q, &m.key.to_lowercase());
+            // Body matches are slightly discounted so a key hit always wins a tie.
+            let send_s = fuzzy_score(&q, &m.send.to_lowercase()).map(|s| s - 1);
+            let best = key_s.into_iter().chain(send_s).max();
+            best.map(|s| (s, m))
+        })
+        .collect();
+    scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+    scored.into_iter().map(|(_, m)| m).collect()
 }
 
 fn draw(f: &mut ratatui::Frame, query: &str, matches: &[&Macro], selected: usize) {

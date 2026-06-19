@@ -14,12 +14,6 @@ const SUBSTRING_BASE: i32 = 10_000;
 const SUBSEQUENCE_BASE: i32 = 5_000;
 const TYPO_BASE: i32 = 1_000;
 
-/// Match `query` against `target` (both already lowercased). True if they match
-/// at all — see [`fuzzy_score`] for the ranked variant.
-pub fn fuzzy_match(query: &str, target: &str) -> bool {
-    fuzzy_score(query, target).is_some()
-}
-
 /// Rank `query` against `target` (both already lowercased). Returns `Some(score)`
 /// where a higher score means a closer match, or `None` if they do not match.
 ///
@@ -168,7 +162,12 @@ fn osa_substring_distance(query: &str, target: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_match, fuzzy_score};
+    use super::fuzzy_score;
+
+    /// Does `query` match `target` at all (ranked variant ignored)?
+    fn fuzzy_match(query: &str, target: &str) -> bool {
+        fuzzy_score(query, target).is_some()
+    }
 
     /// Of several targets, the best-ranked one for `query`. Mirrors how the host
     /// list picks which row to select.

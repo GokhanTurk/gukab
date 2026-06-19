@@ -3,6 +3,24 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.2.0] - 2026-06-18
+
+### Added
+- `gukab --version` / `-V` and `gukab --help` / `-h`.
+- Example configs: [`examples/hosts.toml`](examples/hosts.toml) and
+  [`examples/automations.toml`](examples/automations.toml), fully commented.
+- The running version is shown in the side panel (under the switch).
+
+### Changed
+- The macro picker (`Ctrl+A`) now ranks results by relevance — same fuzzy scoring
+  as the host list — instead of an unordered match list.
+- The installer now installs to `~/.local/bin` (was `~/.cargo/bin`); gukab is a
+  standalone binary, not a cargo-installed dev tool.
+
+### Fixed
+- `q` no longer quits the host list — it now types into the search box like any
+  other character (the search is always live). Quit with `Esc`.
+
 ## [1.1.1] - 2026-06-18
 
 ### Fixed
@@ -49,6 +67,7 @@ This project follows [Semantic Versioning](https://semver.org).
 - Prebuilt binaries, a `curl | sh` installer, and a self-updater (`gukab-update`)
   via cargo-dist; published on tagged releases.
 
+[1.2.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.2.0
 [1.1.1]: https://github.com/GokhanTurk/gukab/releases/tag/v1.1.1
 [1.1.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.1.0
 [1.0.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.0.0

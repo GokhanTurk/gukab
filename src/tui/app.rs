@@ -383,7 +383,8 @@ impl App {
 
     fn update_normal(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') if key.modifiers.is_empty() => self.should_quit = true,
+            // Esc quits. `q` is NOT a quit key — the search box is always live, so
+            // every printable char (incl. q/Q) must reach the filter.
             KeyCode::Esc => self.should_quit = true,
 
             // Ctrl+↑/↓ reorder the selected host within its group (persisted).

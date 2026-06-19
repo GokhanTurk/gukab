@@ -1,0 +1,55 @@
+# Example gukab host inventory.
+# Copy to ~/.config/gukab/hosts.toml and edit.
+#
+# Passwords are NEVER stored here — they live in the OS keychain. Each host
+# references a keychain entry by name via `credential_ref`; add the secret in the
+# TUI with Ctrl+K (or `security add-generic-password -s gukab -a <ref> -w <pass>`).
+
+# ---- Groups (optional) -------------------------------------------------------
+# Each group is a collapsible header in the host list. `icon` is any glyph you
+# paste — a Nerd Font symbol, an emoji, or leave it "" for none.
+[[groups]]
+name = "Core"
+icon = ""          # e.g. paste a Nerd Font glyph or an emoji like 🏢
+
+[[groups]]
+name = "Access"
+icon = ""
+
+# ---- Hosts -------------------------------------------------------------------
+[[hosts]]
+name = "core-sw-01"        # label shown in the list
+hostname = "10.0.0.1"      # IP or DNS name
+port = 22                  # optional, defaults to 22
+username = "admin"
+credential_ref = "core"    # keychain entry holding this host's password
+group = "Core"             # optional; omit for an ungrouped host
+
+# A host that auto-runs a macro right after connecting (see automations.toml "en").
+# Running a macro on connect also arms that macro's expect rules for the session.
+[[hosts]]
+name = "dist-sw-01"
+hostname = "10.0.2.1"
+username = "admin"
+credential_ref = "core"
+group = "Access"
+on_connect = ["en"]        # macro keys to run on connect
+
+# A host with its OWN macros and expect rules (in addition to the global ones).
+[[hosts]]
+name = "lab-sw-03"
+hostname = "10.0.1.23"
+username = "admin"
+credential_ref = "lab"
+group = "Access"
+
+  [[hosts.macros]]
+  key = "uptime"
+  send = "show version | include uptime"
+
+  # A host's own expect rules always apply during its session: when `pattern`
+  # (a regex) appears in the output, gukab auto-sends the response.
+  [[hosts.expects]]
+  pattern = "[Pp]assword:"
+  send_credential = "enable"   # reads keychain entry "enable" at match time
+  once = true

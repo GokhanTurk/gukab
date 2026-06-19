@@ -190,7 +190,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(msg) => msg.as_str(),
-        None => " ↑↓ nav  ^↑↓ move  Enter connect  ^N add  ^E edit  ^D delete  ^K cred  q quit",
+        None => " ↑↓ nav  ^↑↓ move  Enter connect  ^N add  ^E edit  ^D delete  ^K cred  Esc quit",
     };
     let widget = Paragraph::new(text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -379,6 +379,8 @@ fn draw_banner(f: &mut Frame, frame: u64, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(Color::DarkGray);
     let white = Style::default().fg(Color::White);
+    // Readable even on semi-transparent terminals (DarkGray washes out there).
+    let label = Style::default().fg(Color::Gray);
 
     // 3-row block font: the middle row makes "B" unambiguous (2 rows read as "D").
     let mut lines: Vec<Line> = vec![
@@ -394,7 +396,8 @@ fn draw_banner(f: &mut Frame, frame: u64, area: Rect) {
     for row in seven_segment(&now.format("%H:%M").to_string()) {
         lines.push(Line::styled(row, white));
     }
-    lines.push(Line::styled(now.format("%Y-%m-%d").to_string(), dim));
+    lines.push(Line::raw("")); // breathing room between the clock and the date
+    lines.push(Line::styled(now.format("%Y-%m-%d").to_string(), label));
     lines.push(Line::raw(""));
 
     // Switch chassis: top border, two LED rows, bottom border.
@@ -403,6 +406,10 @@ fn draw_banner(f: &mut Frame, frame: u64, area: Rect) {
     lines.push(led_row(frame, 1, dim));
     lines.push(led_row(frame, 2, dim));
     lines.push(Line::styled(format!("└{}┘", "─".repeat(SWITCH_INNER)), dim));
+
+    // Version (compiled in), under the switch.
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(format!("v{}", env!("CARGO_PKG_VERSION")), cyan));
 
     let panel = Paragraph::new(lines).alignment(Alignment::Center);
     f.render_widget(panel, area);

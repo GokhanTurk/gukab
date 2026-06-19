@@ -86,8 +86,12 @@ Config lives in `~/.config/gukab/`:
 - `log/<host>/<timestamp>.log` — per-session transcripts.
 
 Credentials (passwords) are stored in the OS keychain via the `keyring` crate,
-never in `hosts.toml`. See [CLAUDE.md](CLAUDE.md) for the full config schema and
-session-automation model.
+never in `hosts.toml`.
+
+Copy-paste starting points (fully commented):
+[`examples/hosts.toml`](examples/hosts.toml) and
+[`examples/automations.toml`](examples/automations.toml). The
+[wiki](https://github.com/GokhanTurk/gukab/wiki) has the full reference.
 
 ## Security
 

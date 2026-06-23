@@ -190,7 +190,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(msg) => msg.as_str(),
-        None => " ↑↓ nav  ^↑↓ move  Enter connect  ^N add  ^E edit  ^D delete  ^K cred  Esc quit",
+        None => " ↑↓ nav  ^/⇧↑↓ move  Enter connect  ^N add  ^E edit  ^D delete  ^K cred  Esc quit",
     };
     let widget = Paragraph::new(text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));

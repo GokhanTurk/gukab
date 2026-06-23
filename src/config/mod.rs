@@ -10,6 +10,11 @@ pub struct Host {
     pub port: u16,
     pub username: String,
     pub credential_ref: String,
+    /// Path to a private key file (e.g. `~/.ssh/id_ed25519`). Empty = password auth.
+    /// The key material is never copied into config or keyring — only this path is
+    /// stored; a passphrase (if any) is read from the `credential_ref` keyring entry.
+    #[serde(default)]
+    pub identity_file: String,
     /// Group this host belongs to (matches a `[[groups]]` name); `None` = ungrouped.
     #[serde(default)]
     pub group: Option<String>,
@@ -60,6 +65,7 @@ impl Default for Host {
             port: 22,
             username: String::new(),
             credential_ref: String::new(),
+            identity_file: String::new(),
             group: None,
             macros: Vec::new(),
             expects: Vec::new(),
@@ -110,6 +116,29 @@ fn default_port() -> u16 {
 
 fn default_true() -> bool {
     true
+}
+
+/// Expand a leading `~` or `$HOME` in a path to the user's home directory.
+/// Only a leading `~`/`~/` (and `$HOME` prefix) is expanded; embedded `~` is left
+/// alone. Returns the input unchanged if `$HOME` is unset.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => h,
+        _ => return PathBuf::from(path),
+    };
+    if path == "~" {
+        return PathBuf::from(home);
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return PathBuf::from(home).join(rest);
+    }
+    if let Some(rest) = path.strip_prefix("$HOME/") {
+        return PathBuf::from(home).join(rest);
+    }
+    if path == "$HOME" {
+        return PathBuf::from(home);
+    }
+    PathBuf::from(path)
 }
 
 fn config_dir() -> PathBuf {
@@ -170,4 +199,28 @@ pub fn save_hosts(hosts: &[Host], groups: &[Group]) -> Result<(), ConfigError> {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_tilde;
+    use std::path::PathBuf;
+
+    #[test]
+    fn expand_tilde_resolves_home_prefixes() {
+        // SAFETY: single-threaded test; we set HOME for the duration of this test.
+        unsafe { std::env::set_var("HOME", "/home/gukab") };
+        assert_eq!(expand_tilde("~"), PathBuf::from("/home/gukab"));
+        assert_eq!(
+            expand_tilde("~/.ssh/id_ed25519"),
+            PathBuf::from("/home/gukab/.ssh/id_ed25519")
+        );
+        assert_eq!(
+            expand_tilde("$HOME/.ssh/id_rsa"),
+            PathBuf::from("/home/gukab/.ssh/id_rsa")
+        );
+        // Absolute and embedded-tilde paths are left untouched.
+        assert_eq!(expand_tilde("/etc/keys/k"), PathBuf::from("/etc/keys/k"));
+        assert_eq!(expand_tilde("/a/~/b"), PathBuf::from("/a/~/b"));
+    }
 }

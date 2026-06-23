@@ -64,6 +64,20 @@ src/
 
 Credentials (passwords, private keys) are **never** written to `hosts.toml`; they live exclusively in the OS keychain via the `keyring` crate.
 
+**SSH key authentication:** a host may set `identity_file` (path to a private key,
+e.g. `~/.ssh/id_ed25519`; `~`/`$HOME` is expanded by `config::expand_tilde`). The
+key **file path** is the only thing stored — the key material is never copied into
+`hosts.toml` or the keyring; the file stays on disk where the user keeps it.
+`ssh::client::connect` tries auth in order: **(1)** public key (if `identity_file`
+is set), **(2)** password, **(3)** keyboard-interactive, **(4)** none — each only if
+the prior failed. An **encrypted** key's passphrase is read from the host's
+`credential_ref` keyring entry (so the same field holds a password for password
+hosts or a passphrase for key hosts; a passphrase-less key leaves `credential_ref`
+empty). `load_identity` reads the key with `ssh_key::PrivateKey::read_openssh_file`,
+decrypts if needed, and warns (OpenSSH-style, non-blocking) if the key file is
+group/other-accessible (`warn_if_world_readable`). RSA keys are presented with
+`HashAlg::Sha256` via `PrivateKeyWithHashAlg`.
+
 **Host-key verification:** `ClientHandler::check_server_key` ([src/ssh/client.rs](src/ssh/client.rs))
 does trust-on-first-use — it records each server's SHA-256 fingerprint in
 `~/.config/gukab/known_hosts` (`config::known_hosts_path()`, file mode `0600`) and
@@ -81,9 +95,11 @@ does trust-on-first-use — it records each server's SHA-256 fingerprint in
   editing — both use the same `AppMode::Editing`, distinguished by `original_idx`)
 - `Ctrl+D`: delete the selected host (a `ConfirmDelete` prompt; `y`/Enter confirms, `n`/Esc
   cancels) — removes it from `hosts.toml`
-- `Ctrl+↑` / `Ctrl+↓`: move the selected host up/down **within its group**, persisted to
-  `hosts.toml` (disabled while a search filter is active, since the list is then ranked by
-  relevance not stored order)
+- `Ctrl+↑` / `Ctrl+↓` (or `Shift+↑` / `Shift+↓`): move the selected host up/down **within
+  its group**, persisted to `hosts.toml` (disabled while a search filter is active, since the
+  list is then ranked by relevance not stored order). `Shift+↑/↓` is the macOS-friendly
+  alternative — there `Ctrl+↑/↓` is intercepted by Mission Control / App Exposé before
+  reaching the terminal.
 - `Ctrl+K`: add a standalone keyring credential (ref + password) — used for secrets that
   expect rules reference (e.g. an enable password), independent of any host
 

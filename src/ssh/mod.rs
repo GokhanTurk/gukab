@@ -15,6 +15,8 @@ pub enum SshError {
     Keyring(String),
     #[error("Automation config error: {0}")]
     Automation(String),
+    #[error("SSH key error: {0}")]
+    Key(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

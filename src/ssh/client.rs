@@ -1,10 +1,10 @@
 use std::{borrow::Cow, sync::Arc};
 
 use russh::{
-    cipher, client, client::AuthResult, client::KeyboardInteractiveAuthResponse, kex, mac,
-    ChannelMsg, Preferred,
+    cipher, client, client::AuthResult, client::KeyboardInteractiveAuthResponse, kex,
+    keys::PrivateKeyWithHashAlg, mac, ChannelMsg, Preferred,
 };
-use ssh_key::{Algorithm, EcdsaCurve, HashAlg};
+use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
 use tokio::io::AsyncWriteExt;
 
 use crate::{
@@ -170,9 +170,16 @@ fn legacy_compatible_preferred() -> Preferred {
 }
 
 pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshError> {
-    let password = keyring::Entry::new("gukab", &host.credential_ref)
-        .and_then(|e| e.get_password())
-        .map_err(|e| SshError::Keyring(e.to_string()))?;
+    // The keyring secret is optional: for password hosts it is the login password,
+    // for key hosts it is the (possibly absent) passphrase. A key-only host with no
+    // passphrase has an empty `credential_ref` and no entry — that is not an error.
+    let secret: Option<String> = if host.credential_ref.is_empty() {
+        None
+    } else {
+        keyring::Entry::new("gukab", &host.credential_ref)
+            .and_then(|e| e.get_password())
+            .ok()
+    };
 
     let config = Arc::new(client::Config {
         preferred: legacy_compatible_preferred(),
@@ -187,24 +194,49 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     let mut session =
         client::connect(config, (host.hostname.as_str(), host.port), handler).await?;
 
-    // Try plain password auth first; if the server doesn't offer it (common on
-    // network switches like Planet, which only advertise keyboard-interactive),
-    // fall back to keyboard-interactive answering each prompt with the password —
-    // this is what the OpenSSH client does automatically.
-    let authenticated = match session
-        .authenticate_password(&host.username, password.clone())
-        .await?
-    {
-        AuthResult::Success => true,
-        _ if keyboard_interactive_auth(&mut session, &host.username, &password).await? => true,
-        // Some switches do no real SSH-layer auth and present their own
-        // Username/Password login over the shell. Accept "none" and let the
-        // device prompt in-band — the user logs in there, like the ssh CLI does.
-        _ => matches!(
+    // Auth order, each tried only if the previous failed:
+    //   1. public key (if `identity_file` is set) — passphrase from the keyring,
+    //   2. plain password (if a secret is available),
+    //   3. keyboard-interactive answering each prompt with the password (common on
+    //      switches like Planet that only advertise keyboard-interactive),
+    //   4. "none" — some switches do no SSH-layer auth and present their own
+    //      Username/Password login over the shell; let the device prompt in-band.
+    // This mirrors what the OpenSSH client does automatically.
+    let mut authenticated = false;
+
+    if !host.identity_file.is_empty() {
+        let key = load_identity(&host.identity_file, secret.as_deref())?;
+        let hash_alg = if key.algorithm().is_rsa() {
+            Some(HashAlg::Sha256)
+        } else {
+            None
+        };
+        let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
+        if matches!(
+            session.authenticate_publickey(&host.username, key).await?,
+            AuthResult::Success
+        ) {
+            authenticated = true;
+        }
+    }
+
+    if !authenticated && let Some(password) = secret.as_deref() {
+        authenticated = match session
+            .authenticate_password(&host.username, password.to_string())
+            .await?
+        {
+            AuthResult::Success => true,
+            _ => keyboard_interactive_auth(&mut session, &host.username, password).await?,
+        };
+    }
+
+    if !authenticated {
+        authenticated = matches!(
             session.authenticate_none(&host.username).await?,
             AuthResult::Success
-        ),
-    };
+        );
+    }
+
     if !authenticated {
         return Err(SshError::AuthFailed);
     }
@@ -274,6 +306,56 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     restore_terminal();
 
     result
+}
+
+/// Load a private key from `path` for public-key auth, decrypting it with
+/// `passphrase` if the file is encrypted. `~`/`$HOME` is expanded. The key bytes
+/// stay in memory only for the duration of the connection — never written to
+/// config or the keyring. A loosely-permissioned key file (readable/writable by
+/// group or other) triggers an OpenSSH-style warning but does not block the
+/// connection, since the key never leaves the user's own disk.
+fn load_identity(path: &str, passphrase: Option<&str>) -> Result<PrivateKey, SshError> {
+    let resolved = crate::config::expand_tilde(path);
+    if !resolved.exists() {
+        return Err(SshError::Key(format!(
+            "identity file not found: {}",
+            resolved.display()
+        )));
+    }
+    warn_if_world_readable(&resolved);
+
+    // `load_secret_key` accepts every format network engineers actually have on
+    // disk: OpenSSH (`BEGIN OPENSSH PRIVATE KEY`), legacy PEM PKCS#1
+    // (`BEGIN RSA PRIVATE KEY`), PKCS#8, PKCS#5-encrypted, and PuTTY .ppk. It also
+    // decrypts in-place with the passphrase, so we don't pre-parse the format.
+    let passphrase = passphrase.filter(|p| !p.is_empty());
+    russh::keys::load_secret_key(&resolved, passphrase).map_err(|e| match e {
+        russh::keys::Error::KeyIsEncrypted => SshError::Key(format!(
+            "key {} is passphrase-protected — store the passphrase in the keyring (Ctrl+K) and set it as the host's credential ref",
+            resolved.display()
+        )),
+        other => SshError::Key(format!("cannot load key {}: {other}", resolved.display())),
+    })
+}
+
+/// Warn (stderr) if a key file is readable or writable by group/other, mirroring
+/// OpenSSH's "UNPROTECTED PRIVATE KEY FILE" advisory. Best-effort; non-Unix and
+/// stat failures are silently ignored.
+fn warn_if_world_readable(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mode = meta.permissions().mode();
+            if mode & 0o077 != 0 {
+                eprintln!(
+                    "[gukab] WARNING: private key {} is accessible by group/other (mode {:o}); recommend chmod 600.",
+                    path.display(),
+                    mode & 0o777
+                );
+            }
+        }
+    }
 }
 
 /// Authenticate via keyboard-interactive, answering every prompt with `password`.
@@ -511,7 +593,18 @@ async fn scan_and_respond(
         if auto.fired || !auto.re.is_match(scan_buf) {
             continue;
         }
-        let payload = resolve_response(&auto.response)?;
+        let payload = match resolve_response(&auto.response) {
+            Ok(payload) => payload,
+            // A failed credential lookup (e.g. a missing/mistyped keyring ref) must
+            // NOT tear down the live session — warn once, disarm this rule, and let
+            // the user answer the prompt by hand.
+            Err(e) => {
+                eprint!("\r\n[gukab] automation skipped ({e}); answer the prompt manually.\r\n");
+                auto.fired = true;
+                scan_buf.clear();
+                break;
+            }
+        };
         channel.data(payload.as_bytes()).await?;
         if auto.once {
             auto.fired = true;

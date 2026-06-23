@@ -8,7 +8,7 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 18
 Set Width 1200
-Set Height 700
+Set Height 820
 Set Theme "Catppuccin Mocha"
 Set Padding 18
 Set TypingSpeed 85ms
@@ -26,8 +26,20 @@ Down Sleep 250ms
 Down Sleep 250ms
 Down Sleep 250ms
 Down Sleep 250ms
-Down Sleep 250ms
-Sleep 800ms
+Sleep 700ms
+
+# Reorder a host within its group (Ctrl+↑/↓; Shift+↑/↓ also works on macOS).
+Up Sleep 200ms
+Up Sleep 200ms
+Up Sleep 200ms
+Up Sleep 200ms
+Up Sleep 200ms
+Up Sleep 200ms
+Sleep 400ms
+Down Sleep 350ms
+Ctrl+Down Sleep 700ms
+Ctrl+Down Sleep 700ms
+Ctrl+Up   Sleep 800ms
 
 # Fuzzy search: substring filtering by group.
 Type "core"   Sleep 1.6s
@@ -37,19 +49,12 @@ Backspace 4   Sleep 300ms
 Type "r3"     Sleep 1.8s
 Backspace 2   Sleep 300ms
 
-# Another fuzzy filter.
-Type "acc"    Sleep 1.6s
-Backspace 3   Sleep 500ms
+# SSH key auth: open a key-authenticated host in the edit form — note the
+# "SSH key file" field pointing at a private key (only the path is stored).
+Type "web"    Sleep 1.2s
+Ctrl+E        Sleep 2.6s
+Escape        Sleep 600ms
+Backspace 3   Sleep 400ms
 
-# Navigate the list.
-Down Sleep 350ms
-Down Sleep 350ms
-Down Sleep 350ms
-Up   Sleep 450ms
-
-# Open the Add Host form, then close it.
-Ctrl+N        Sleep 2s
-Escape        Sleep 700ms
-
-# Quit.
-Type "q"      Sleep 1.2s
+# Quit (Esc — the search box is always live, so q types into it).
+Escape        Sleep 1.2s

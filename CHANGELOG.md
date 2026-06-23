@@ -3,6 +3,31 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.3.0] - 2026-06-23
+
+### Added
+- **SSH key authentication.** A host can set an `identity_file` (private key path,
+  e.g. `~/.ssh/id_ed25519`) — set it in the host form's new **SSH key file** field.
+  Only the path is stored; the key material is never copied into `hosts.toml` or the
+  keyring. Auth is tried in order: public key → password → keyboard-interactive →
+  none. An encrypted key's passphrase is read from the host's keyring `credential_ref`
+  (store it with `Ctrl+K`); a passphrase-less key needs no credential at all.
+  Keys load via OpenSSH, legacy PEM (PKCS#1 `BEGIN RSA PRIVATE KEY`), PKCS#8, and
+  PuTTY formats; a group/other-readable key file triggers a non-blocking warning.
+- **Reorder hosts with `Shift+↑` / `Shift+↓`** in addition to `Ctrl+↑` / `Ctrl+↓` —
+  on macOS `Ctrl+↑/↓` is intercepted by Mission Control before reaching the terminal.
+
+### Changed
+- `credential_ref` is now optional in `hosts.toml` — a key-only host (or an in-band
+  login switch) no longer needs a placeholder credential.
+
+### Fixed
+- A failed expect-rule credential lookup (a missing or mistyped keyring ref) no
+  longer tears down the live SSH session. It now warns once, disarms that rule, and
+  lets you answer the prompt by hand.
+- Status-bar messages are transient again: a warning (e.g. "clear the search to
+  reorder") is cleared on the next keypress, so the keybinding hints reappear.
+
 ## [1.2.0] - 2026-06-18
 
 ### Added

@@ -9,6 +9,10 @@ pub struct Host {
     #[serde(default = "default_port")]
     pub port: u16,
     pub username: String,
+    /// Keyring entry name for this host's secret: a login password, or the
+    /// passphrase of `identity_file`. Optional — a key-only host with an
+    /// unencrypted key (or a switch that logs in in-band) needs no secret.
+    #[serde(default)]
     pub credential_ref: String,
     /// Path to a private key file (e.g. `~/.ssh/id_ed25519`). Empty = password auth.
     /// The key material is never copied into config or keyring — only this path is

@@ -3,19 +3,19 @@
 
 [[groups]]
 name = "Core"
-icon = ""
+icon = ""
 
 [[groups]]
 name = "Distribution"
-icon = ""
+icon = ""
 
 [[groups]]
 name = "Access"
-icon = ""
+icon = ""
 
 [[groups]]
 name = "Servers"
-icon = ""
+icon = ""
 
 [[hosts]]
 name = "core-switch-01"
@@ -97,12 +97,13 @@ username = "netadmin"
 credential_ref = "demo"
 group = "Access"
 
+# Key-authenticated host: only the key path is stored, no password/credential.
 [[hosts]]
 name = "srv-web-01"
 hostname = "10.0.3.10"
 port = 22
 username = "netadmin"
-credential_ref = "demo"
+identity_file = "~/.ssh/id_ed25519"
 group = "Servers"
 
 [[hosts]]

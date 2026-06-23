@@ -4,19 +4,20 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::{Group, Host};
 
-pub const EDIT_FIELD_COUNT: usize = 8;
+pub const EDIT_FIELD_COUNT: usize = 9;
 pub const EDIT_FIELD_LABELS: [&str; EDIT_FIELD_COUNT] = [
     "Name",
     "Hostname",
     "Port",
     "Username",
     "Group (blank = ungrouped)",
-    "Credential ref",
+    "Credential ref (password / key passphrase)",
+    "SSH key file (blank = password auth)",
     "On-connect macros (space-separated)",
     "Password (blank = keep existing)",
 ];
 pub const PORT_FIELD_IDX: usize = 2;
-pub const PASSWORD_FIELD_IDX: usize = 7;
+pub const PASSWORD_FIELD_IDX: usize = 8;
 
 /// Flat string representation of a Host used while editing.
 /// `password` is never stored in TOML — it goes to the OS keychain on save.
@@ -27,6 +28,7 @@ pub struct EditDraft {
     pub username: String,
     pub group: String,
     pub credential_ref: String,
+    pub identity_file: String,
     pub on_connect: String,
     pub password: String,
 }
@@ -40,6 +42,7 @@ impl From<&Host> for EditDraft {
             username: h.username.clone(),
             group: h.group.clone().unwrap_or_default(),
             credential_ref: h.credential_ref.clone(),
+            identity_file: h.identity_file.clone(),
             on_connect: h.on_connect.join(" "),
             password: String::new(), // never pre-filled
         }
@@ -55,6 +58,7 @@ impl EditDraft {
             username: String::new(),
             group: String::new(),
             credential_ref: String::new(),
+            identity_file: String::new(),
             on_connect: String::new(),
             password: String::new(),
         }
@@ -68,7 +72,8 @@ impl EditDraft {
             3 => &self.username,
             4 => &self.group,
             5 => &self.credential_ref,
-            6 => &self.on_connect,
+            6 => &self.identity_file,
+            7 => &self.on_connect,
             _ => &self.password,
         }
     }
@@ -81,7 +86,8 @@ impl EditDraft {
             3 => &mut self.username,
             4 => &mut self.group,
             5 => &mut self.credential_ref,
-            6 => &mut self.on_connect,
+            6 => &mut self.identity_file,
+            7 => &mut self.on_connect,
             _ => &mut self.password,
         }
     }
@@ -382,16 +388,31 @@ impl App {
     }
 
     fn update_normal(&mut self, key: KeyEvent) {
+        // Status messages are transient: clear any standing message on the next
+        // keypress so the keybinding hints reappear. A handler below may set a
+        // fresh one (e.g. the "clear the search to reorder" warning), which then
+        // shows until the following keystroke.
+        self.status = None;
         match key.code {
             // Esc quits. `q` is NOT a quit key — the search box is always live, so
             // every printable char (incl. q/Q) must reach the filter.
             KeyCode::Esc => self.should_quit = true,
 
-            // Ctrl+↑/↓ reorder the selected host within its group (persisted).
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+↑/↓ (or Shift+↑/↓) reorder the selected host within its group
+            // (persisted). Shift is the macOS-friendly alternative: there Ctrl+↑/↓
+            // is captured by Mission Control before reaching the terminal.
+            KeyCode::Up
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+            {
                 self.move_selected_host(true);
             }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Down
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+            {
                 self.move_selected_host(false);
             }
 
@@ -595,6 +616,7 @@ impl App {
                     port: draft.port.parse().unwrap_or(22),
                     username: draft.username.clone(),
                     credential_ref: draft.credential_ref.clone(),
+                    identity_file: draft.identity_file.trim().to_string(),
                     group,
                     macros,
                     expects,

@@ -4,6 +4,11 @@
 # Passwords are NEVER stored here — they live in the OS keychain. Each host
 # references a keychain entry by name via `credential_ref`; add the secret in the
 # TUI with Ctrl+K (or `security add-generic-password -s gukab -a <ref> -w <pass>`).
+#
+# SSH key auth: set `identity_file` to a private key path (`~` is expanded). Only
+# the path is stored — never the key itself. If the key is passphrase-protected,
+# put the passphrase in the keychain (Ctrl+K) and name it in `credential_ref`; a
+# passphrase-less key leaves `credential_ref` empty.
 
 # ---- Groups (optional) -------------------------------------------------------
 # Each group is a collapsible header in the host list. `icon` is any glyph you
@@ -34,6 +39,25 @@ username = "admin"
 credential_ref = "core"
 group = "Access"
 on_connect = ["en"]        # macro keys to run on connect
+
+# A host authenticated with an SSH key instead of a password. The key file stays
+# on disk; gukab only stores the path. Passphrase-less here (credential_ref omitted).
+[[hosts]]
+name = "edge-rtr-01"
+hostname = "10.0.3.1"
+username = "netops"
+identity_file = "~/.ssh/id_ed25519"
+group = "Core"
+
+# Same, but the key is passphrase-protected: store the passphrase with Ctrl+K under
+# a name (e.g. "edge-key") and reference it here.
+[[hosts]]
+name = "edge-rtr-02"
+hostname = "10.0.3.2"
+username = "netops"
+identity_file = "~/.ssh/id_edge"
+credential_ref = "edge-key"   # keychain entry holding the key's passphrase
+group = "Core"
 
 # A host with its OWN macros and expect rules (in addition to the global ones).
 [[hosts]]

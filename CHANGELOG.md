@@ -3,6 +3,24 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.4.0] - 2026-06-24
+
+### Added
+- **`gukab --trust-keychain` (macOS)** — stops the keychain from re-prompting for
+  credentials after every update. An unsigned binary is identified to the keychain
+  by its content hash, which changes on each update and invalidates "Always Allow".
+  This command gives the binary a stable, **per-machine self-signed code-signing
+  identity** (`gukab-local-signing`) and signs it, so the keychain identifies it by
+  certificate instead of hash — "Always Allow" then persists across restarts and
+  updates. Free (no Apple Developer ID). The signing key is generated locally,
+  authorised for `codesign` only, and its temp material is wiped right after import;
+  host secrets are untouched. Run it once after each update. You then click
+  "Always Allow" once per distinct credential (not per host).
+
+### Fixed
+- `gukab -h` now shows that hosts can be reordered with `Shift+↑/↓` as well as
+  `Ctrl+↑/↓`.
+
 ## [1.3.0] - 2026-06-23
 
 ### Added

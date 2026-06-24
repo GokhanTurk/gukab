@@ -78,6 +78,25 @@ decrypts if needed, and warns (OpenSSH-style, non-blocking) if the key file is
 group/other-accessible (`warn_if_world_readable`). RSA keys are presented with
 `HashAlg::Sha256` via `PrivateKeyWithHashAlg`.
 
+**Keychain re-prompts after updates (macOS):** an unsigned binary is identified to
+the keychain ACL by its content hash, which changes on every update — so "Always
+Allow" is invalidated and macOS re-prompts for each host's credential. `gukab
+--trust-keychain` ([src/macos_trust.rs](src/macos_trust.rs)) fixes this **without
+Apple Developer ID**: it generates a per-machine **self-signed code-signing
+certificate** (`gukab-local-signing`, via the system LibreSSL at `/usr/bin/openssl`
+— Homebrew OpenSSL 3 p12 output fails `security import`) and `codesign`s the
+binary with a fixed `--identifier gukab`. Because the signature now identifies the
+binary by certificate (not hash), re-signing each new release with the same local
+cert keeps "Always Allow" valid across restarts and updates. The private key is
+created in a 0600 temp dir wiped right after `security import`, and only
+`/usr/bin/codesign` is authorised to use it (no "allow all apps"). Host secrets are
+untouched — still one keychain entry each. Existence is checked with `security
+find-certificate -c` (a self-signed cert is not *trusted* for the code-signing
+policy, so `find-identity -p codesigning` omits it even though `codesign --sign`
+works). The command is macOS-only and idempotent (re-signs, never duplicates the
+cert). Flow: run `gukab --trust-keychain` once after each update, then click
+"Always Allow" once.
+
 **Host-key verification:** `ClientHandler::check_server_key` ([src/ssh/client.rs](src/ssh/client.rs))
 does trust-on-first-use — it records each server's SHA-256 fingerprint in
 `~/.config/gukab/known_hosts` (`config::known_hosts_path()`, file mode `0600`) and

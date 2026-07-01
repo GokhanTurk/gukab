@@ -9,10 +9,11 @@ use ratatui::{
 use chrono::Local;
 
 use crate::tui::app::{
-    App, AppMode, ExpectEdit, MacroEdit, MacroFocus, MacroScreen, MacroState, EDIT_FIELD_COUNT,
-    EDIT_FIELD_LABELS, PASSWORD_FIELD_IDX,
+    App, AppMode, CField, ConsoleForm, ExpectEdit, MacroEdit, MacroFocus, MacroScreen, MacroState,
+    EDIT_FIELD_COUNT, EDIT_FIELD_LABELS, PASSWORD_FIELD_IDX,
 };
 use crate::config::Macro;
+use crate::serial::{Flow, Parity};
 
 /// Width of the right-hand ASCII art panel.
 const ART_W: u16 = 36;
@@ -61,6 +62,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         } => draw_credential_form(f, reference, password, focused, cursor, area),
         AppMode::ConfirmDelete { ref name, .. } => draw_confirm_delete(f, name, area),
         AppMode::Macros(ref state) => draw_macros(f, state, area),
+        AppMode::Console(ref form) => draw_console_form(f, form, area),
         AppMode::Normal => {}
     }
 }
@@ -108,7 +110,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .filter_map(|r| match r {
             Row::Host { idx, .. } => Some(app.hosts[*idx].name.chars().count()),
-            Row::Group { .. } => None,
+            Row::Group { .. } | Row::ConsoleAction => None,
         })
         .max()
         .unwrap_or(NAME_MIN)
@@ -165,6 +167,15 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(format!(":{}", h.port), port_style),
                     ]))
                 }
+                Row::ConsoleAction => {
+                    // Selected row drops its fg so the highlight shows through.
+                    let style = if selected {
+                        Style::default()
+                    } else {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    };
+                    ListItem::new(Line::from(Span::styled("＋  Console connection…", style)))
+                }
             }
         })
         .collect();
@@ -195,7 +206,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(msg) => msg.as_str(),
-        None => " ↑↓ nav  ^/⇧↑↓ move  Enter connect  ^N add  ^E edit  ^D del  ^K cred  ^G macros  Esc quit",
+        None => " ↑↓ nav  Enter connect  ^N add  ^E edit  ^D del  ^K cred  ^G macros  ^L console  Esc quit",
     };
     let widget = Paragraph::new(text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -697,6 +708,99 @@ fn draw_confirm_delete_macro(f: &mut Frame, key: &str, area: Rect) {
     );
 }
 
+// ───────────────────────── Console (serial) form ─────────────────────────
+
+fn parity_short(p: Parity) -> &'static str {
+    match p {
+        Parity::None => "N",
+        Parity::Even => "E",
+        Parity::Odd => "O",
+    }
+}
+
+fn parity_label(p: Parity) -> &'static str {
+    match p {
+        Parity::None => "None",
+        Parity::Even => "Even",
+        Parity::Odd => "Odd",
+    }
+}
+
+fn flow_label(fl: Flow) -> &'static str {
+    match fl {
+        Flow::None => "None",
+        Flow::Software => "Software (XON/XOFF)",
+        Flow::Hardware => "Hardware (RTS/CTS)",
+    }
+}
+
+fn draw_console_form(f: &mut Frame, form: &ConsoleForm, area: Rect) {
+    let fields = form.fields();
+    let n = fields.len();
+
+    let popup_width = area.width.min(64);
+    let popup_height = ((n as u16) * 3 + 3).min(area.height);
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Console connection ")
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let mut cons: Vec<Constraint> = (0..n).map(|_| Constraint::Length(3)).collect();
+    cons.push(Constraint::Min(1));
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(cons)
+        .split(inner);
+
+    let mut focus_rect: Option<Rect> = None;
+    for (i, field) in fields.iter().enumerate() {
+        let focused = i == form.focus;
+        let (label, value) = match field {
+            CField::Device => (
+                "Device  (↑↓ detected · ^R rescan)".to_string(),
+                form.device.clone(),
+            ),
+            CField::Baud => ("Baud  (↑↓ presets)".to_string(), form.baud.clone()),
+            CField::Advanced => {
+                let arrow = if form.advanced_open { "▾" } else { "▸" };
+                let summary = format!(
+                    "{}-{}-{}  ·  flow {}",
+                    form.data_bits,
+                    parity_short(form.parity),
+                    form.stop_bits,
+                    flow_label(form.flow),
+                );
+                (format!("{arrow} Advanced  (Enter toggles)"), summary)
+            }
+            CField::DataBits => ("Data bits  (←→)".to_string(), form.data_bits.to_string()),
+            CField::Parity => ("Parity  (←→)".to_string(), parity_label(form.parity).to_string()),
+            CField::StopBits => ("Stop bits  (←→)".to_string(), form.stop_bits.to_string()),
+            CField::Flow => ("Flow control  (←→)".to_string(), flow_label(form.flow).to_string()),
+        };
+        draw_field(f, rows[i], &label, &value, focused);
+        if focused && matches!(field, CField::Device | CField::Baud) {
+            focus_rect = Some(rows[i]);
+        }
+    }
+
+    let hint = Paragraph::new("Tab: field  ↑↓/←→: value  Enter: connect  Esc: cancel")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, rows[n]);
+
+    // Caret only for the focused text field (Device / Baud).
+    if let Some(r) = focus_rect {
+        cursor_in_field(f, r, form.cursor);
+    }
+}
+
 // ───────────────────────── ASCII art side panel ─────────────────────────
 
 /// Ports per LED row (24 top + 24 bottom = 48-port switch).
@@ -862,5 +966,35 @@ mod render_tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("kdm"), "Key row not visible");
+    }
+
+    #[test]
+    fn console_form_renders_and_advanced_toggles() {
+        use crate::tui::app::ConsoleForm;
+        let mut form = ConsoleForm::new();
+        form.device = "/dev/ttyUSB0".into();
+        form.baud = "115200".into();
+
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        let render = |term: &mut Terminal<TestBackend>, form: &ConsoleForm| -> String {
+            term.draw(|f| draw_console_form(f, form, f.area())).unwrap();
+            term.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        let text = render(&mut term, &form);
+        assert!(text.contains("/dev/ttyUSB0"));
+        assert!(text.contains("115200"));
+        assert!(text.contains("Advanced"));
+        assert!(!text.contains("Flow control"), "advanced should be collapsed");
+
+        form.advanced_open = true;
+        let text = render(&mut term, &form);
+        assert!(text.contains("Flow control"), "advanced rows should show");
     }
 }

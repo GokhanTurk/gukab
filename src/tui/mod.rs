@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::{
     config::{Automations, Group, Host},
+    serial::{self, SerialParams},
     ssh,
 };
 use app::App;
@@ -31,9 +32,11 @@ pub async fn run(
 
     // `automations` may have been edited in the macro manager this session, so use
     // the copy handed back out of the event loop (not the original) when connecting.
-    let (pending, automations) = result?;
-    if let Some(host) = pending {
+    let (pending_host, pending_serial, automations) = result?;
+    if let Some(host) = pending_host {
         ssh::client::connect(&host, &automations).await?;
+    } else if let Some(params) = pending_serial {
+        serial::client::connect_serial(&params, &automations).await?;
     }
 
     Ok(())
@@ -44,7 +47,7 @@ async fn event_loop(
     hosts: Vec<Host>,
     groups: Vec<Group>,
     automations: Automations,
-) -> Result<(Option<Host>, Automations), TuiError> {
+) -> Result<(Option<Host>, Option<SerialParams>, Automations), TuiError> {
     let mut app = App::new(hosts, groups, automations);
 
     loop {
@@ -56,10 +59,14 @@ async fn event_loop(
             app.update(key);
         }
 
-        if app.should_quit || app.pending_connect.is_some() {
+        if app.should_quit || app.pending_connect.is_some() || app.pending_serial.is_some() {
             break;
         }
     }
 
-    Ok((app.pending_connect, std::mem::take(&mut app.automations)))
+    Ok((
+        app.pending_connect,
+        app.pending_serial,
+        std::mem::take(&mut app.automations),
+    ))
 }

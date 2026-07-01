@@ -14,6 +14,8 @@ This file documents the architecture and conventions for working in this reposit
 - `nucleo` — fuzzy finder
 - `serde` + `toml` — config parsing
 - `keyring` `3.x` — credential storage via OS keychain (keyring 4.x is a CLI tool, not a library)
+- `serialport` `4.x` — pure-Rust serial/console I/O (macOS IOKit, Linux libudev — no
+  openssl-sys); `libudev` is only used for port enumeration (`available_ports`)
 - `tokio` — async runtime
 - `thiserror` — centralized `Error` enum
 
@@ -123,6 +125,8 @@ does trust-on-first-use — it records each server's SHA-256 fingerprint in
   expect rules reference (e.g. an enable password), independent of any host
 - `Ctrl+G`: open the **macro manager** — list / add / edit / delete the global macros in
   `automations.toml`, including each macro's nested expect rules (see Session Automation)
+- `Ctrl+L` (or the always-present **＋ Console connection…** row at the top of the list):
+  open the **console (serial) connection** form (see Serial / Console Connection)
 
 The host list renders the name column at a fixed width (longest visible name, clamped to
 12–26 cols, truncated with `…`) so the `user@host:port` column stays aligned regardless of
@@ -234,12 +238,42 @@ host name sanitized to `[A-Za-z0-9._-]`, falling back to `hostname`). The log is
 transcript (like `script(1)`): commands echoed by the remote plus their output. Passwords
 typed at prompts are not captured because the remote does not echo them.
 
-Implemented in [src/ssh/session_log.rs](src/ssh/session_log.rs): `session_log::start(host)`
-opens the file and spawns a **dedicated writer thread** fed by an unbounded mpsc channel. The
-interactive `io_loop` only does an in-memory `tx.send(data.to_vec())` per output chunk — no
-disk I/O on the hot path — so logging never adds typing latency. The thread batches writes
+Implemented in [src/ssh/session_log.rs](src/ssh/session_log.rs): `session_log::start(label)`
+(the label is the host name/hostname for SSH, the device basename for serial) opens the file
+and spawns a **dedicated writer thread** fed by an unbounded mpsc channel. The interactive
+`run_session` loop only does an in-memory `tx.send(data.to_vec())` per output chunk — no disk
+I/O on the hot path — so logging never adds typing latency. The thread batches writes
 (drain-then-flush per burst) and flushes/closes when the session ends. If the log file can't
 be created the session continues unlogged with a stderr warning.
+
+## Serial / Console Connection
+
+gukab also connects over a **serial console** (USB-to-serial into a device console port).
+This is **ephemeral — never persisted**: `Ctrl+L` (or the always-present **＋ Console
+connection…** row at the top of the host list) opens a form ([src/tui/app.rs](src/tui/app.rs)
+`ConsoleForm`; [src/tui/ui.rs](src/tui/ui.rs) `draw_console_form`). Fields: **Device** (↑↓
+cycles auto-detected ports from `serialport::available_ports`, `Ctrl+R` rescans, or type a
+path) and **Baud** (↑↓ cycles presets `[9600,19200,38400,57600,115200]`, default 9600). A
+collapsed **Advanced** row (Enter toggles) exposes data bits / parity / stop bits / flow
+(defaults **8-N-1, no flow** — connect works without opening it). `Enter` builds a transient
+`serial::SerialParams` (validated: non-empty device, baud > 0) and exits the event loop;
+[src/tui/mod.rs](src/tui/mod.rs) then calls `serial::client::connect_serial`.
+
+A console session has **full parity with SSH** — `Ctrl+A` macro picker, expect rules (armed
+when a macro runs), session logging, output colorization — plus **`Ctrl+B` to cycle the baud
+rate live** (serial consoles are a baud-guessing game). Only global macros apply (there is no
+host).
+
+**One transport-agnostic engine.** The interactive loop is
+[src/session/mod.rs](src/session/mod.rs) `run_session`, generic over a `Transport` trait
+(`write` + `recv`); it owns the macro picker, expect engine (`build_automations`/
+`scan_and_respond`), logging, colorization, and stdin passthrough. SSH provides `SshTransport`
+(over a `russh::Channel`, [src/ssh/client.rs](src/ssh/client.rs)); serial provides
+`SerialTransport` ([src/serial/client.rs](src/serial/client.rs)). The serial port is owned by
+one blocking worker thread that reads (→ an mpsc the transport drains) and, between reads,
+applies queued writes / `set_baud_rate` commands — no `try_clone`, so live baud changes never
+race the reader. `Ctrl+B` is only intercepted when a `BaudControl` is present (serial); on SSH
+it is forwarded normally.
 
 ## Constraints
 

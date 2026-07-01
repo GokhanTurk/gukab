@@ -1,0 +1,93 @@
+//! Serial / console connection: an ephemeral (never persisted) connection to a
+//! local serial device, driven by the shared [`crate::session`] engine so it has
+//! the same macros / expects / logging / colorization as an SSH session.
+
+pub mod client;
+
+use serialport::{DataBits, FlowControl, Parity as SpParity, StopBits};
+
+/// Baud rates offered as presets in the form and cycled live with `Ctrl+B`.
+pub const BAUD_PRESETS: [u32; 5] = [9600, 19200, 38400, 57600, 115200];
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Parity {
+    None,
+    Even,
+    Odd,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Flow {
+    None,
+    Software,
+    Hardware,
+}
+
+/// Everything needed to open a serial line. Built transiently by the console form;
+/// never written to config. Defaults (8-N-1, no flow) match virtually all network
+/// device console cables.
+#[derive(Clone)]
+pub struct SerialParams {
+    pub device: String,
+    pub baud: u32,
+    /// 5..=8
+    pub data_bits: u8,
+    pub parity: Parity,
+    /// 1..=2
+    pub stop_bits: u8,
+    pub flow: Flow,
+}
+
+impl SerialParams {
+    pub fn data_bits_sp(&self) -> DataBits {
+        match self.data_bits {
+            5 => DataBits::Five,
+            6 => DataBits::Six,
+            7 => DataBits::Seven,
+            _ => DataBits::Eight,
+        }
+    }
+
+    pub fn parity_sp(&self) -> SpParity {
+        match self.parity {
+            Parity::None => SpParity::None,
+            Parity::Even => SpParity::Even,
+            Parity::Odd => SpParity::Odd,
+        }
+    }
+
+    pub fn stop_bits_sp(&self) -> StopBits {
+        if self.stop_bits == 2 {
+            StopBits::Two
+        } else {
+            StopBits::One
+        }
+    }
+
+    pub fn flow_sp(&self) -> FlowControl {
+        match self.flow {
+            Flow::None => FlowControl::None,
+            Flow::Software => FlowControl::Software,
+            Flow::Hardware => FlowControl::Hardware,
+        }
+    }
+
+    /// Short label for the log folder: the device's final path component.
+    pub fn log_label(&self) -> &str {
+        self.device
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("serial")
+    }
+}
+
+/// Detected serial ports (sorted), for the form's device picker. Best-effort:
+/// returns an empty list if enumeration fails or is unsupported.
+pub fn list_ports() -> Vec<String> {
+    let mut names: Vec<String> = serialport::available_ports()
+        .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}

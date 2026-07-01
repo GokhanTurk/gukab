@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 regex = "1"
 chrono = "0.4"
+serialport = "4"
 
 # Optimize dependencies even in dev builds so `cargo run` isn't crippled by
 # unoptimized crypto (russh + ring). Our own crate stays at debug opt-level for

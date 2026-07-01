@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::{Group, Host};
+use crate::config::{Automations, Expect, Group, Host, Macro};
 
 pub const EDIT_FIELD_COUNT: usize = 9;
 pub const EDIT_FIELD_LABELS: [&str; EDIT_FIELD_COUNT] = [
@@ -120,6 +120,215 @@ pub enum AppMode {
         /// Host name, shown in the prompt.
         name: String,
     },
+    /// The macro manager (Ctrl+G): list / add / edit / delete global macros. All of
+    /// its nested screens live in one `MacroState` so the whole subsystem is one mode.
+    Macros(MacroState),
+}
+
+/// State of the macro manager. `macros` is a working copy of the global macros; it
+/// is written back to `App.automations` and persisted only when a macro is saved or
+/// deleted.
+pub struct MacroState {
+    pub macros: Vec<Macro>,
+    pub list_selected: usize,
+    pub screen: MacroScreen,
+}
+
+pub enum MacroScreen {
+    /// The macro list.
+    List,
+    /// Add (`original_idx = None`) or edit an existing macro.
+    Edit(Box<MacroEdit>),
+    /// Confirm deletion of the macro at this index.
+    ConfirmDeleteMacro(usize),
+}
+
+/// Which row of the macro edit form has focus.
+#[derive(Clone, Copy, PartialEq)]
+pub enum MacroFocus {
+    Key,
+    /// The `n`-th command line of `send`.
+    Cmd(usize),
+    /// The `n`-th expect rule (summary row).
+    Expect(usize),
+}
+
+/// Draft of one macro being added/edited. `send` is edited as a list of single-line
+/// command rows (each row = one command, matching the runtime's line-per-command
+/// semantics); they are joined with `\n` on save.
+pub struct MacroEdit {
+    pub original_idx: Option<usize>,
+    pub key: String,
+    pub cmd_lines: Vec<String>,
+    pub expects: Vec<Expect>,
+    pub focus: MacroFocus,
+    /// Char caret within the focused single-line field (Key or a command line).
+    pub cursor: usize,
+    /// `Some` while adding/editing one of this macro's expect rules.
+    pub sub: Option<ExpectEdit>,
+}
+
+/// Draft of one expect rule being added/edited within a macro.
+pub struct ExpectEdit {
+    pub original_idx: Option<usize>,
+    pub pattern: String,
+    pub send: String,
+    pub send_credential: String,
+    pub once: bool,
+    /// 0 = pattern, 1 = send, 2 = credential, 3 = once.
+    pub focus: usize,
+    pub cursor: usize,
+}
+
+impl MacroEdit {
+    fn new_blank() -> Self {
+        Self {
+            original_idx: None,
+            key: String::new(),
+            cmd_lines: vec![String::new()],
+            expects: Vec::new(),
+            focus: MacroFocus::Key,
+            cursor: 0,
+            sub: None,
+        }
+    }
+
+    fn from_macro(idx: usize, m: &Macro) -> Self {
+        let cmd_lines = if m.send.is_empty() {
+            vec![String::new()]
+        } else {
+            m.send.split('\n').map(|s| s.to_string()).collect()
+        };
+        Self {
+            original_idx: Some(idx),
+            key: m.key.clone(),
+            cmd_lines,
+            expects: m.expects.clone(),
+            focus: MacroFocus::Key,
+            cursor: m.key.chars().count(),
+            sub: None,
+        }
+    }
+
+    /// The ordered list of focusable rows: Key, each command line, each expect.
+    pub fn focus_order(&self) -> Vec<MacroFocus> {
+        let mut order = vec![MacroFocus::Key];
+        order.extend((0..self.cmd_lines.len()).map(MacroFocus::Cmd));
+        order.extend((0..self.expects.len()).map(MacroFocus::Expect));
+        order
+    }
+
+    /// Text of the focused single-line field (`None` for an expect summary row).
+    fn focus_field(&self) -> Option<&str> {
+        match self.focus {
+            MacroFocus::Key => Some(&self.key),
+            MacroFocus::Cmd(i) => self.cmd_lines.get(i).map(String::as_str),
+            MacroFocus::Expect(_) => None,
+        }
+    }
+
+    /// Set focus and park the caret at the end of the newly focused field.
+    fn set_focus(&mut self, f: MacroFocus) {
+        self.focus = f;
+        self.cursor = self.focus_field().map(|s| s.chars().count()).unwrap_or(0);
+    }
+
+    fn move_focus(&mut self, forward: bool) {
+        let order = self.focus_order();
+        let n = order.len();
+        let cur = order.iter().position(|&f| f == self.focus).unwrap_or(0);
+        let next = if forward { (cur + 1) % n } else { (cur + n - 1) % n };
+        self.set_focus(order[next]);
+    }
+}
+
+impl ExpectEdit {
+    fn new_blank() -> Self {
+        Self {
+            original_idx: None,
+            pattern: String::new(),
+            send: String::new(),
+            send_credential: String::new(),
+            once: true,
+            focus: 0,
+            cursor: 0,
+        }
+    }
+
+    fn from_expect(idx: usize, e: &Expect) -> Self {
+        Self {
+            original_idx: Some(idx),
+            pattern: e.pattern.clone(),
+            send: e.send.clone().unwrap_or_default(),
+            send_credential: e.send_credential.clone().unwrap_or_default(),
+            once: e.once,
+            focus: 0,
+            cursor: e.pattern.chars().count(),
+        }
+    }
+
+    pub fn field(&self, idx: usize) -> &str {
+        match idx {
+            0 => &self.pattern,
+            1 => &self.send,
+            2 => &self.send_credential,
+            _ => "",
+        }
+    }
+
+    fn field_len(&self) -> usize {
+        self.field(self.focus).chars().count()
+    }
+}
+
+/// Validate a macro draft and build the `Macro`. `macros` is the current list (for
+/// the duplicate-key check). Mirrors the runtime's requirements.
+fn build_macro(edit: &MacroEdit, macros: &[Macro]) -> Result<Macro, String> {
+    let key = edit.key.trim();
+    if key.is_empty() {
+        return Err("Key cannot be empty".into());
+    }
+    let dup = macros
+        .iter()
+        .enumerate()
+        .any(|(i, m)| m.key == key && Some(i) != edit.original_idx);
+    if dup {
+        return Err(format!("A macro with key '{key}' already exists"));
+    }
+    // Drop trailing blank command lines, then require at least one real command.
+    let mut lines = edit.cmd_lines.clone();
+    while lines.len() > 1 && lines.last().is_some_and(|s| s.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.iter().all(|l| l.trim().is_empty()) {
+        return Err("Add at least one command line".into());
+    }
+    Ok(Macro {
+        key: key.to_string(),
+        send: lines.join("\n"),
+        expects: edit.expects.clone(),
+    })
+}
+
+/// Validate an expect draft and build the `Expect`. Mirrors
+/// `ssh::client::build_single_automation`: valid regex and exactly one of
+/// send / send_credential.
+fn build_expect(edit: &ExpectEdit) -> Result<Expect, String> {
+    if edit.pattern.trim().is_empty() {
+        return Err("Pattern cannot be empty".into());
+    }
+    regex::Regex::new(&edit.pattern).map_err(|e| format!("Invalid regex: {e}"))?;
+    let has_send = !edit.send.is_empty();
+    let has_cred = !edit.send_credential.is_empty();
+    if has_send == has_cred {
+        return Err("Set exactly one of Send / Credential".into());
+    }
+    Ok(Expect {
+        pattern: edit.pattern.clone(),
+        send: has_send.then(|| edit.send.clone()),
+        send_credential: has_cred.then(|| edit.send_credential.clone()),
+        once: edit.once,
+    })
 }
 
 /// A visible line in the host list: either a group header or a host beneath it.
@@ -138,6 +347,8 @@ pub enum Row {
 pub struct App {
     pub hosts: Vec<Host>,
     pub groups: Vec<Group>,
+    /// Global macros; the macro manager (Ctrl+G) edits these and persists them.
+    pub automations: Automations,
     pub filter: String,
     /// Visible rows (group headers + hosts), rebuilt by `apply_filter`.
     pub rows: Vec<Row>,
@@ -155,10 +366,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(hosts: Vec<Host>, groups: Vec<Group>) -> Self {
+    pub fn new(hosts: Vec<Host>, groups: Vec<Group>, automations: Automations) -> Self {
         let mut app = Self {
             hosts,
             groups,
+            automations,
             filter: String::new(),
             rows: Vec::new(),
             collapsed: HashSet::new(),
@@ -384,6 +596,7 @@ impl App {
             AppMode::Editing { .. } => self.update_editing(key),
             AppMode::Credential { .. } => self.update_credential(key),
             AppMode::ConfirmDelete { .. } => self.update_confirm_delete(key),
+            AppMode::Macros(_) => self.update_macros(key),
         }
     }
 
@@ -442,6 +655,15 @@ impl App {
                     focused: 0,
                     cursor: 0,
                 };
+            }
+
+            // Ctrl+G opens the macro manager (list / add / edit / delete global macros).
+            KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL => {
+                self.mode = AppMode::Macros(MacroState {
+                    macros: self.automations.macros.clone(),
+                    list_selected: 0,
+                    screen: MacroScreen::List,
+                });
             }
 
             KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
@@ -709,6 +931,247 @@ impl App {
             }
         }
     }
+
+    /// Handle a key in the macro manager (list, macro edit form, expect sub-form,
+    /// delete confirm). All state mutations happen while `state` is borrowed;
+    /// whole-`self` side effects (persisting, closing) are deferred to after the
+    /// borrow via the locals below.
+    fn update_macros(&mut self, key: KeyEvent) {
+        self.status = None;
+        let ctrl = key.modifiers == KeyModifiers::CONTROL;
+        // Deferred actions (applied after the `state` borrow is released).
+        let mut close = false;
+        let mut persist = false;
+        let mut status_msg: Option<String> = None;
+
+        {
+            let AppMode::Macros(state) = &mut self.mode else {
+                return;
+            };
+            // Screen transition to apply after the match (avoids reassigning the
+            // matched place while it is borrowed).
+            let mut next_screen: Option<MacroScreen> = None;
+
+            match &mut state.screen {
+                MacroScreen::List => match key.code {
+                    KeyCode::Esc => close = true,
+                    KeyCode::Up => {
+                        state.list_selected = state.list_selected.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if !state.macros.is_empty() {
+                            state.list_selected =
+                                (state.list_selected + 1).min(state.macros.len() - 1);
+                        }
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        next_screen = Some(MacroScreen::Edit(Box::new(MacroEdit::new_blank())));
+                    }
+                    KeyCode::Char('d') if ctrl => {
+                        if !state.macros.is_empty() {
+                            next_screen =
+                                Some(MacroScreen::ConfirmDeleteMacro(state.list_selected));
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::Char('e')
+                        if key.code == KeyCode::Enter || ctrl =>
+                    {
+                        if let Some(m) = state.macros.get(state.list_selected) {
+                            next_screen = Some(MacroScreen::Edit(Box::new(
+                                MacroEdit::from_macro(state.list_selected, m),
+                            )));
+                        }
+                    }
+                    _ => {}
+                },
+
+                MacroScreen::ConfirmDeleteMacro(i) => {
+                    let i = *i;
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                            if i < state.macros.len() {
+                                state.macros.remove(i);
+                            }
+                            if state.list_selected >= state.macros.len() {
+                                state.list_selected = state.macros.len().saturating_sub(1);
+                            }
+                            persist = true;
+                            status_msg = Some("Macro deleted".into());
+                            next_screen = Some(MacroScreen::List);
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            next_screen = Some(MacroScreen::List);
+                        }
+                        _ => {}
+                    }
+                }
+
+                MacroScreen::Edit(edit) => {
+                    if let Some(sub) = &mut edit.sub {
+                        // ── Expect sub-form ──
+                        match key.code {
+                            KeyCode::Esc => edit.sub = None,
+                            KeyCode::Tab => {
+                                sub.focus = (sub.focus + 1) % 4;
+                                sub.cursor = sub.field_len();
+                            }
+                            KeyCode::BackTab => {
+                                sub.focus = (sub.focus + 3) % 4;
+                                sub.cursor = sub.field_len();
+                            }
+                            KeyCode::Char(' ') if sub.focus == 3 => sub.once = !sub.once,
+                            KeyCode::Enter | KeyCode::Char('s') if key.code == KeyCode::Enter || ctrl => {
+                                match build_expect(sub) {
+                                    Ok(exp) => {
+                                        match sub.original_idx {
+                                            Some(i) if i < edit.expects.len() => {
+                                                edit.expects[i] = exp;
+                                            }
+                                            _ => edit.expects.push(exp),
+                                        }
+                                        edit.sub = None;
+                                    }
+                                    Err(e) => status_msg = Some(e),
+                                }
+                            }
+                            _ => {
+                                // Inlined (not `field_mut`) so the field and
+                                // `cursor` are seen as disjoint borrows.
+                                let field: Option<&mut String> = match sub.focus {
+                                    0 => Some(&mut sub.pattern),
+                                    1 => Some(&mut sub.send),
+                                    2 => Some(&mut sub.send_credential),
+                                    _ => None,
+                                };
+                                if let Some(field) = field {
+                                    apply_edit_key(field, &mut sub.cursor, key);
+                                }
+                            }
+                        }
+                    } else {
+                        // ── Macro edit form ──
+                        match key.code {
+                            KeyCode::Esc => next_screen = Some(MacroScreen::List),
+                            KeyCode::Char('s') if ctrl => {
+                                match build_macro(edit, &state.macros) {
+                                    Ok(m) => {
+                                        match edit.original_idx {
+                                            Some(i) if i < state.macros.len() => {
+                                                state.macros[i] = m;
+                                            }
+                                            _ => state.macros.push(m),
+                                        }
+                                        persist = true;
+                                        status_msg = Some("Macro saved".into());
+                                        next_screen = Some(MacroScreen::List);
+                                    }
+                                    Err(e) => status_msg = Some(e),
+                                }
+                            }
+                            // Ctrl+X adds a new expect rule.
+                            KeyCode::Char('x') if ctrl => {
+                                edit.sub = Some(ExpectEdit::new_blank());
+                            }
+                            KeyCode::Tab | KeyCode::Down => edit.move_focus(true),
+                            KeyCode::BackTab | KeyCode::Up => edit.move_focus(false),
+                            // Ctrl+E / Enter on an expect row edits it.
+                            KeyCode::Char('e') if ctrl => {
+                                if let MacroFocus::Expect(i) = edit.focus
+                                    && let Some(e) = edit.expects.get(i)
+                                {
+                                    edit.sub = Some(ExpectEdit::from_expect(i, e));
+                                }
+                            }
+                            // Ctrl+D deletes the focused command line or expect.
+                            KeyCode::Char('d') if ctrl => match edit.focus {
+                                MacroFocus::Cmd(i) => {
+                                    if edit.cmd_lines.len() > 1 {
+                                        edit.cmd_lines.remove(i);
+                                        edit.set_focus(MacroFocus::Cmd(
+                                            i.min(edit.cmd_lines.len() - 1),
+                                        ));
+                                    } else {
+                                        edit.cmd_lines[0].clear();
+                                        edit.set_focus(MacroFocus::Cmd(0));
+                                    }
+                                }
+                                MacroFocus::Expect(i) => {
+                                    if i < edit.expects.len() {
+                                        edit.expects.remove(i);
+                                    }
+                                    if edit.expects.is_empty() {
+                                        edit.set_focus(MacroFocus::Key);
+                                    } else {
+                                        edit.set_focus(MacroFocus::Expect(
+                                            i.min(edit.expects.len() - 1),
+                                        ));
+                                    }
+                                }
+                                MacroFocus::Key => {}
+                            },
+                            KeyCode::Enter => match edit.focus {
+                                MacroFocus::Key => edit.set_focus(MacroFocus::Cmd(0)),
+                                MacroFocus::Cmd(i) => {
+                                    edit.cmd_lines.insert(i + 1, String::new());
+                                    edit.set_focus(MacroFocus::Cmd(i + 1));
+                                }
+                                MacroFocus::Expect(i) => {
+                                    if let Some(e) = edit.expects.get(i) {
+                                        edit.sub = Some(ExpectEdit::from_expect(i, e));
+                                    }
+                                }
+                            },
+                            // Backspace on an empty command line removes that line.
+                            KeyCode::Backspace
+                                if matches!(edit.focus, MacroFocus::Cmd(_))
+                                    && edit.cursor == 0 =>
+                            {
+                                if let MacroFocus::Cmd(i) = edit.focus
+                                    && edit.cmd_lines.len() > 1
+                                    && edit.cmd_lines[i].is_empty()
+                                {
+                                    edit.cmd_lines.remove(i);
+                                    edit.set_focus(MacroFocus::Cmd(i.saturating_sub(1)));
+                                }
+                            }
+                            _ => {
+                                // Inlined (not `focus_field_mut`) so the field and
+                                // `cursor` are seen as disjoint borrows.
+                                let field: Option<&mut String> = match edit.focus {
+                                    MacroFocus::Key => Some(&mut edit.key),
+                                    MacroFocus::Cmd(i) => edit.cmd_lines.get_mut(i),
+                                    MacroFocus::Expect(_) => None,
+                                };
+                                if let Some(field) = field {
+                                    apply_edit_key(field, &mut edit.cursor, key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(s) = next_screen {
+                state.screen = s;
+            }
+        }
+
+        // ── Deferred whole-`self` side effects ──
+        if persist {
+            if let AppMode::Macros(state) = &self.mode {
+                self.automations.macros = state.macros.clone();
+            }
+            if let Err(e) = crate::config::save_automations(&self.automations) {
+                status_msg = Some(format!("Save failed: {e}"));
+            }
+        }
+        if let Some(m) = status_msg {
+            self.set_status(m);
+        }
+        if close {
+            self.mode = AppMode::Normal;
+        }
+    }
 }
 
 /// Result of feeding a key to the shared line editor.
@@ -800,4 +1263,83 @@ fn write_credential(reference: &str, password: &str) -> Result<(), String> {
         .get_password()
         .map_err(|e| format!("Keyring verify failed: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod macro_tests {
+    use super::*;
+
+    fn macro_edit(key: &str, lines: &[&str], expects: Vec<Expect>) -> MacroEdit {
+        MacroEdit {
+            original_idx: None,
+            key: key.to_string(),
+            cmd_lines: lines.iter().map(|s| s.to_string()).collect(),
+            expects,
+            focus: MacroFocus::Key,
+            cursor: 0,
+            sub: None,
+        }
+    }
+
+    #[test]
+    fn multiline_macro_with_expect_roundtrips_through_toml() {
+        let edit = macro_edit(
+            "kd",
+            &["switchport mode access", "spanning-tree portfast", ""],
+            vec![Expect {
+                pattern: "[Pp]assword:".into(),
+                send: None,
+                send_credential: Some("en1".into()),
+                once: false,
+            }],
+        );
+        let m = build_macro(&edit, &[]).expect("valid macro");
+        // Trailing blank command line is dropped; interior lines joined with `\n`.
+        assert_eq!(m.send, "switchport mode access\nspanning-tree portfast");
+
+        let autos = Automations { macros: vec![m] };
+        let serialized = toml::to_string(&autos).expect("serialize");
+        let back: Automations = toml::from_str(&serialized).expect("parse");
+        assert_eq!(back.macros.len(), 1);
+        let bm = &back.macros[0];
+        assert_eq!(bm.key, "kd");
+        assert_eq!(bm.send, "switchport mode access\nspanning-tree portfast");
+        assert_eq!(bm.expects.len(), 1);
+        assert_eq!(bm.expects[0].send_credential.as_deref(), Some("en1"));
+        assert_eq!(bm.expects[0].send, None);
+        assert!(!bm.expects[0].once);
+    }
+
+    #[test]
+    fn build_macro_rejects_empty_key_blank_body_and_duplicates() {
+        assert!(build_macro(&macro_edit("", &["x"], vec![]), &[]).is_err());
+        assert!(build_macro(&macro_edit("k", &["", "  "], vec![]), &[]).is_err());
+        let existing = vec![Macro {
+            key: "en".into(),
+            send: "enable".into(),
+            expects: vec![],
+        }];
+        assert!(build_macro(&macro_edit("en", &["x"], vec![]), &existing).is_err());
+        // Editing the same macro in place (matching original_idx) is not a dup.
+        let mut edit = macro_edit("en", &["enable"], vec![]);
+        edit.original_idx = Some(0);
+        assert!(build_macro(&edit, &existing).is_ok());
+    }
+
+    #[test]
+    fn build_expect_requires_exactly_one_target_and_valid_regex() {
+        let mut e = ExpectEdit::new_blank();
+        e.pattern = "[Pp]assword:".into();
+        assert!(build_expect(&e).is_err()); // neither send nor credential
+        e.send = "a".into();
+        e.send_credential = "b".into();
+        assert!(build_expect(&e).is_err()); // both
+        e.send_credential.clear();
+        assert!(build_expect(&e).is_ok()); // only send
+        // Invalid regex is rejected.
+        let mut bad = ExpectEdit::new_blank();
+        bad.pattern = "[".into();
+        bad.send = "x".into();
+        assert!(build_expect(&bad).is_err());
+    }
 }

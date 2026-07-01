@@ -121,6 +121,8 @@ does trust-on-first-use — it records each server's SHA-256 fingerprint in
   reaching the terminal.
 - `Ctrl+K`: add a standalone keyring credential (ref + password) — used for secrets that
   expect rules reference (e.g. an enable password), independent of any host
+- `Ctrl+G`: open the **macro manager** — list / add / edit / delete the global macros in
+  `automations.toml`, including each macro's nested expect rules (see Session Automation)
 
 The host list renders the name column at a fixed width (longest visible name, clamped to
 12–26 cols, truncated with `…`) so the `user@host:port` column stays aligned regardless of
@@ -213,8 +215,16 @@ rules (rejecting invalid regex or rules that set both/neither of `send`/`send_cr
 handled by `forward_stdin` / `run_macro_prompt`. The escape key is the `ESCAPE_PREFIX`
 constant (currently `0x01`).
 
-TUI listing/editing of existing macros/expects is not implemented yet — edit
-`automations.toml` directly. `Ctrl+K` only adds credentials.
+The **macro manager** (`Ctrl+G` from the host list, [src/tui/app.rs](src/tui/app.rs)
+`update_macros`, [src/tui/ui.rs](src/tui/ui.rs) `draw_macros`) lists, adds, edits, and
+deletes the **global** macros in `automations.toml`, including each macro's nested
+`expects`. `send` is edited as a list of single-line command rows (each row = one
+command; joined with `\n` on save, matching the runtime's line-per-command semantics).
+Saves are validated to mirror the engine — unique non-empty `key`, at least one command
+line; each expect needs a valid regex `pattern` and exactly one of `send` /
+`send_credential` — then persisted via `config::save_automations` (owner-only; like
+`save_hosts` it rewrites the file and drops hand-written comments). Per-host macros
+(`[[hosts.macros]]`) are still edited in TOML directly; `Ctrl+K` only adds credentials.
 
 ## Session Logging
 

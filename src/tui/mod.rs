@@ -26,10 +26,13 @@ pub async fn run(
     automations: Automations,
 ) -> Result<(), TuiError> {
     let mut terminal = ratatui::init();
-    let pending = event_loop(&mut terminal, hosts, groups).await;
+    let result = event_loop(&mut terminal, hosts, groups, automations).await;
     ratatui::restore();
 
-    if let Some(host) = pending? {
+    // `automations` may have been edited in the macro manager this session, so use
+    // the copy handed back out of the event loop (not the original) when connecting.
+    let (pending, automations) = result?;
+    if let Some(host) = pending {
         ssh::client::connect(&host, &automations).await?;
     }
 
@@ -40,8 +43,9 @@ async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     hosts: Vec<Host>,
     groups: Vec<Group>,
-) -> Result<Option<Host>, TuiError> {
-    let mut app = App::new(hosts, groups);
+    automations: Automations,
+) -> Result<(Option<Host>, Automations), TuiError> {
+    let mut app = App::new(hosts, groups, automations);
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
@@ -57,5 +61,5 @@ async fn event_loop(
         }
     }
 
-    Ok(app.pending_connect)
+    Ok((app.pending_connect, std::mem::take(&mut app.automations)))
 }

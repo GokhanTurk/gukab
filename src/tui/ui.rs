@@ -8,7 +8,11 @@ use ratatui::{
 
 use chrono::Local;
 
-use crate::tui::app::{App, AppMode, EDIT_FIELD_COUNT, EDIT_FIELD_LABELS, PASSWORD_FIELD_IDX};
+use crate::tui::app::{
+    App, AppMode, ExpectEdit, MacroEdit, MacroFocus, MacroScreen, MacroState, EDIT_FIELD_COUNT,
+    EDIT_FIELD_LABELS, PASSWORD_FIELD_IDX,
+};
+use crate::config::Macro;
 
 /// Width of the right-hand ASCII art panel.
 const ART_W: u16 = 36;
@@ -56,6 +60,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             cursor,
         } => draw_credential_form(f, reference, password, focused, cursor, area),
         AppMode::ConfirmDelete { ref name, .. } => draw_confirm_delete(f, name, area),
+        AppMode::Macros(ref state) => draw_macros(f, state, area),
         AppMode::Normal => {}
     }
 }
@@ -190,7 +195,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(msg) => msg.as_str(),
-        None => " ↑↓ nav  ^/⇧↑↓ move  Enter connect  ^N add  ^E edit  ^D delete  ^K cred  Esc quit",
+        None => " ↑↓ nav  ^/⇧↑↓ move  Enter connect  ^N add  ^E edit  ^D del  ^K cred  ^G macros  Esc quit",
     };
     let widget = Paragraph::new(text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -363,6 +368,335 @@ fn draw_credential_form(
     f.render_widget(hint, rows[2]);
 }
 
+// ───────────────────────── Macro manager (Ctrl+G) ─────────────────────────
+
+/// Selection highlight shared with the host list: bright white text on a vivid blue
+/// bar (explicit RGB so contrast is identical across terminals).
+fn selection_highlight() -> Style {
+    Style::default()
+        .fg(Color::Rgb(255, 255, 255))
+        .bg(Color::Rgb(45, 95, 210))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Width (in cells) of the list highlight symbol, reserved on every row.
+const HL_SYMBOL: &str = "▶ ";
+const HL_SYMBOL_W: u16 = 2;
+
+/// Draw a bordered single-line field (yellow border when focused), like the host
+/// edit form's rows. Returns the inner text area so the caller can park the cursor.
+fn draw_field(f: &mut Frame, area: Rect, label: &str, text: &str, focused: bool) {
+    let border_style = if focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(label.to_string())
+        .border_style(border_style);
+    f.render_widget(Paragraph::new(text).block(block), area);
+}
+
+/// Place the text cursor at char index `cursor` within a bordered field `area`.
+fn cursor_in_field(f: &mut Frame, area: Rect, cursor: usize) {
+    let max_x = area.x + area.width.saturating_sub(2);
+    f.set_cursor_position((((area.x + 1) + cursor as u16).min(max_x), area.y + 1));
+}
+
+fn draw_macros(f: &mut Frame, state: &MacroState, area: Rect) {
+    // The list is the base layer; edit / confirm popups overlay it for context.
+    draw_macro_list(f, &state.macros, state.list_selected, area);
+    match &state.screen {
+        MacroScreen::List => {}
+        MacroScreen::ConfirmDeleteMacro(i) => {
+            let key = state.macros.get(*i).map(|m| m.key.as_str()).unwrap_or("");
+            draw_confirm_delete_macro(f, key, area);
+        }
+        MacroScreen::Edit(edit) => {
+            draw_macro_edit(f, edit, area);
+            if let Some(sub) = &edit.sub {
+                draw_expect_edit(f, sub, area);
+            }
+        }
+    }
+}
+
+fn draw_macro_list(f: &mut Frame, macros: &[Macro], selected: usize, area: Rect) {
+    let popup_width = area.width.min(74);
+    let popup_height = area.height.saturating_sub(4).clamp(6, 22);
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Macros ")
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    if macros.is_empty() {
+        let empty = Paragraph::new("No macros yet — Ctrl+N to add one.")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(empty, rows[0]);
+    } else {
+        let items: Vec<ListItem> = macros
+            .iter()
+            .map(|m| {
+                let preview = m
+                    .send
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("");
+                let mut spans = vec![Span::styled(
+                    format!("{:<12}", m.key),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )];
+                spans.push(Span::styled(
+                    preview.to_string(),
+                    Style::default().fg(Color::Gray),
+                ));
+                if !m.expects.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  [{} expect]", m.expects.len()),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+        let list = List::new(items)
+            .highlight_style(selection_highlight())
+            .highlight_symbol(HL_SYMBOL);
+        let mut lstate = ListState::default();
+        lstate.select(Some(selected.min(macros.len().saturating_sub(1))));
+        f.render_stateful_widget(list, rows[0], &mut lstate);
+    }
+
+    let hint = Paragraph::new("Enter/Ctrl+E edit  Ctrl+N add  Ctrl+D delete  Esc close")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, rows[1]);
+}
+
+fn draw_macro_edit(f: &mut Frame, edit: &MacroEdit, area: Rect) {
+    // All rows are single lines in one scrolling List (so many-line macros can't
+    // overflow), using the same highlight colors as the host list.
+    let popup_width = area.width.min(66);
+    // Content = Key + "Commands" label + N cmd lines + "Expects" label + M expects.
+    let content_rows =
+        (1 + 1 + edit.cmd_lines.len() + 1 + edit.expects.len()) as u16;
+    // +2 for the border, +1 for the hint line inside.
+    let popup_height = (content_rows + 3).min(area.height);
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let title = if edit.original_idx.is_none() {
+        " Add Macro "
+    } else {
+        " Edit Macro "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let list_area = rows[0];
+
+    // Section headers reuse the host list's group-header color (yellow bold).
+    let label_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let mut items: Vec<ListItem> = Vec::new();
+    // Focus target per row (None = a non-selectable label row).
+    let mut focus_at: Vec<Option<MacroFocus>> = Vec::new();
+    // (flat row index, prefix width) of the focused text field, for caret placement.
+    let mut caret: Option<(usize, u16)> = None;
+
+    // Selected rows carry no per-span fg so the white highlight fg wins (as in the
+    // host list); unselected rows use the host list's cyan/gray accents.
+    let key_sel = edit.focus == MacroFocus::Key;
+    let key_prefix = "Key  ";
+    items.push(ListItem::new(Line::from(if key_sel {
+        vec![Span::raw(key_prefix), Span::raw(edit.key.clone())]
+    } else {
+        vec![
+            Span::styled(key_prefix, Style::default().fg(Color::DarkGray)),
+            Span::styled(edit.key.clone(), Style::default().fg(Color::Cyan)),
+        ]
+    })));
+    focus_at.push(Some(MacroFocus::Key));
+    if key_sel {
+        caret = Some((0, key_prefix.chars().count() as u16));
+    }
+
+    items.push(ListItem::new(Line::from(Span::styled("Commands", label_style))));
+    focus_at.push(None);
+    for (i, cmd) in edit.cmd_lines.iter().enumerate() {
+        let sel = edit.focus == MacroFocus::Cmd(i);
+        let prefix = format!("{:>3}  ", i + 1);
+        let pw = prefix.chars().count() as u16;
+        items.push(ListItem::new(Line::from(if sel {
+            vec![Span::raw(prefix), Span::raw(cmd.clone())]
+        } else {
+            vec![
+                Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                Span::raw(cmd.clone()),
+            ]
+        })));
+        focus_at.push(Some(MacroFocus::Cmd(i)));
+        if sel {
+            caret = Some((items.len() - 1, pw));
+        }
+    }
+
+    items.push(ListItem::new(Line::from(Span::styled("Expects", label_style))));
+    focus_at.push(None);
+    for (i, e) in edit.expects.iter().enumerate() {
+        let action = if let Some(s) = &e.send {
+            format!("send {s:?}")
+        } else if let Some(c) = &e.send_credential {
+            format!("cred {c}")
+        } else {
+            "?".to_string()
+        };
+        let once = if e.once { " (once)" } else { "" };
+        let text = format!("  • {}  →  {}{}", e.pattern, action, once);
+        let sel = edit.focus == MacroFocus::Expect(i);
+        items.push(ListItem::new(Line::from(if sel {
+            Span::raw(text)
+        } else {
+            Span::styled(text, Style::default().fg(Color::Gray))
+        })));
+        focus_at.push(Some(MacroFocus::Expect(i)));
+    }
+
+    let selected_flat = focus_at.iter().position(|f| *f == Some(edit.focus));
+    let list = List::new(items)
+        .highlight_style(selection_highlight())
+        .highlight_symbol(HL_SYMBOL);
+    let mut lstate = ListState::default();
+    lstate.select(selected_flat);
+    f.render_stateful_widget(list, list_area, &mut lstate);
+
+    let hint = Paragraph::new("Tab/↑↓ move  ^X add expect  ^E edit  ^D remove  ^S save  Esc")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, rows[1]);
+
+    // Caret for the focused text field (Key / command line). The focused row is the
+    // selected one, so its content is shifted right by the highlight symbol width.
+    if let Some((flat, prefix)) = caret {
+        let offset = lstate.offset();
+        if flat >= offset {
+            let vis = (flat - offset) as u16;
+            if vis < list_area.height {
+                let base_x = list_area.x + HL_SYMBOL_W + prefix + edit.cursor as u16;
+                let max_x = list_area.x + list_area.width.saturating_sub(1);
+                f.set_cursor_position((base_x.min(max_x), list_area.y + vis));
+            }
+        }
+    }
+}
+
+fn draw_expect_edit(f: &mut Frame, sub: &ExpectEdit, area: Rect) {
+    let popup_width = area.width.min(60);
+    let popup_height = 4 * 3 + 4;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let title = if sub.original_idx.is_none() {
+        " Add Expect "
+    } else {
+        " Edit Expect "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    draw_field(f, rows[0], "Pattern (regex)", sub.field(0), sub.focus == 0);
+    draw_field(f, rows[1], "Send (literal)", sub.field(1), sub.focus == 1);
+    draw_field(f, rows[2], "Credential ref", sub.field(2), sub.focus == 2);
+    let once_text = if sub.once {
+        "[x] fire once per session"
+    } else {
+        "[ ] fire on every match"
+    };
+    draw_field(f, rows[3], "Once (Space toggles)", once_text, sub.focus == 3);
+
+    if sub.focus < 3 {
+        cursor_in_field(f, rows[sub.focus], sub.cursor);
+    }
+
+    let hint = Paragraph::new("Tab: field  Space: toggle  Ctrl+S/Enter: save  Esc: cancel")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, rows[4]);
+}
+
+/// Confirm popup for deleting a macro (mirrors `draw_confirm_delete` for hosts).
+fn draw_confirm_delete_macro(f: &mut Frame, key: &str, area: Rect) {
+    let popup_width = area.width.min(54);
+    let popup_height = 5u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete macro ")
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Delete macro \"{key}\"?"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "y/Enter: delete    n/Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        inner,
+    );
+}
+
 // ───────────────────────── ASCII art side panel ─────────────────────────
 
 /// Ports per LED row (24 top + 24 bottom = 48-port switch).
@@ -488,4 +822,45 @@ fn seven_segment(text: &str) -> [String; 3] {
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use crate::tui::app::MacroEdit;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn many_line_macro_renders_focused_row_visible() {
+        // A kdm-style macro with many command lines in a short terminal.
+        let cmds: Vec<String> = (1..=16).map(|i| format!("command-line-{i}")).collect();
+        let mut edit = MacroEdit {
+            original_idx: Some(0),
+            key: "kdm".into(),
+            cmd_lines: cmds,
+            expects: Vec::new(),
+            focus: crate::tui::app::MacroFocus::Cmd(14),
+            cursor: 3,
+            sub: None,
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw_macro_edit(f, &edit, f.area())).unwrap();
+        let buf = term.backend().buffer().clone();
+        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        // The focused (scrolled-to) command line must be visible.
+        assert!(text.contains("command-line-15"), "focused row not visible");
+
+        // Focusing the first row scrolls back to the top / Key row.
+        edit.focus = crate::tui::app::MacroFocus::Key;
+        term.draw(|f| draw_macro_edit(f, &edit, f.area())).unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("kdm"), "Key row not visible");
+    }
 }

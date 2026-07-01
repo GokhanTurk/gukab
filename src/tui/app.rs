@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::{Automations, Expect, Group, Host, Macro};
+use crate::serial::{Flow, Parity, SerialParams, BAUD_PRESETS};
 
 pub const EDIT_FIELD_COUNT: usize = 9;
 pub const EDIT_FIELD_LABELS: [&str; EDIT_FIELD_COUNT] = [
@@ -123,6 +124,186 @@ pub enum AppMode {
     /// The macro manager (Ctrl+G): list / add / edit / delete global macros. All of
     /// its nested screens live in one `MacroState` so the whole subsystem is one mode.
     Macros(MacroState),
+    /// The console (serial) connection form (Ctrl+L or the list's action row).
+    Console(ConsoleForm),
+}
+
+/// Which field of the console form has focus.
+#[derive(Clone, Copy, PartialEq)]
+pub enum CField {
+    Device,
+    Baud,
+    Advanced,
+    DataBits,
+    Parity,
+    StopBits,
+    Flow,
+}
+
+/// Transient state of the console-connect form. Nothing here is persisted — on
+/// connect it produces a `SerialParams` and the app exits the loop to open the port.
+pub struct ConsoleForm {
+    /// Auto-detected serial ports, cycled into `device` with ↑/↓.
+    pub ports: Vec<String>,
+    pub device: String,
+    pub baud: String,
+    /// The Advanced section (data/parity/stop/flow) is collapsed by default.
+    pub advanced_open: bool,
+    pub data_bits: u8,
+    pub parity: Parity,
+    pub stop_bits: u8,
+    pub flow: Flow,
+    /// Index into `fields()`.
+    pub focus: usize,
+    /// Caret within the focused text field (Device / Baud).
+    pub cursor: usize,
+}
+
+impl Default for ConsoleForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConsoleForm {
+    pub fn new() -> Self {
+        let ports = crate::serial::list_ports();
+        let device = ports.first().cloned().unwrap_or_default();
+        let cursor = device.chars().count();
+        Self {
+            ports,
+            device,
+            baud: "9600".to_string(),
+            advanced_open: false,
+            data_bits: 8,
+            parity: Parity::None,
+            stop_bits: 1,
+            flow: Flow::None,
+            focus: 0,
+            cursor,
+        }
+    }
+
+    /// Ordered focusable fields; the Advanced rows appear only when expanded.
+    pub fn fields(&self) -> Vec<CField> {
+        let mut v = vec![CField::Device, CField::Baud, CField::Advanced];
+        if self.advanced_open {
+            v.extend([CField::DataBits, CField::Parity, CField::StopBits, CField::Flow]);
+        }
+        v
+    }
+
+    fn current(&self) -> CField {
+        let fields = self.fields();
+        fields[self.focus.min(fields.len() - 1)]
+    }
+
+    /// Cycle a chosen enum-style field's value (Space / ←→ / ↑↓).
+    fn cycle_value(&mut self, field: CField, forward: bool) {
+        match field {
+            CField::DataBits => {
+                let opts = [8u8, 7, 6, 5];
+                self.data_bits = cycle_in(&opts, self.data_bits, forward);
+            }
+            CField::Parity => {
+                let opts = [Parity::None, Parity::Even, Parity::Odd];
+                self.parity = cycle_in(&opts, self.parity, forward);
+            }
+            CField::StopBits => {
+                let opts = [1u8, 2];
+                self.stop_bits = cycle_in(&opts, self.stop_bits, forward);
+            }
+            CField::Flow => {
+                let opts = [Flow::None, Flow::Software, Flow::Hardware];
+                self.flow = cycle_in(&opts, self.flow, forward);
+            }
+            _ => {}
+        }
+    }
+
+    /// Cycle the detected ports into the Device field.
+    fn cycle_port(&mut self, forward: bool) {
+        if self.ports.is_empty() {
+            return;
+        }
+        let cur = self.ports.iter().position(|p| p == &self.device);
+        let next = match cur {
+            Some(i) => step(i, self.ports.len(), forward),
+            None => 0,
+        };
+        self.device = self.ports[next].clone();
+        self.cursor = self.device.chars().count();
+    }
+
+    fn cycle_baud(&mut self, forward: bool) {
+        let cur: u32 = self.baud.trim().parse().unwrap_or(0);
+        let idx = BAUD_PRESETS.iter().position(|&b| b == cur);
+        let next = match idx {
+            Some(i) => step(i, BAUD_PRESETS.len(), forward),
+            None => 0,
+        };
+        self.baud = BAUD_PRESETS[next].to_string();
+        self.cursor = self.baud.chars().count();
+    }
+
+    /// Char length of the focused text field (0 for non-text fields).
+    fn focus_text_len(&self) -> usize {
+        match self.current() {
+            CField::Device => self.device.chars().count(),
+            CField::Baud => self.baud.chars().count(),
+            _ => 0,
+        }
+    }
+
+    /// Keep `focus` in range after the Advanced section collapses.
+    fn clamp_focus(&mut self) {
+        let len = self.fields().len();
+        if self.focus >= len {
+            self.focus = len - 1;
+        }
+        self.cursor = self.focus_text_len();
+    }
+
+    /// Validate and build the serial parameters, or return a user-facing error.
+    fn build_params(&self) -> Result<SerialParams, String> {
+        let device = self.device.trim().to_string();
+        if device.is_empty() {
+            return Err("Device path cannot be empty".into());
+        }
+        let baud: u32 = self
+            .baud
+            .trim()
+            .parse()
+            .map_err(|_| "Baud must be a number".to_string())?;
+        if baud == 0 {
+            return Err("Baud must be greater than 0".into());
+        }
+        Ok(SerialParams {
+            device,
+            baud,
+            data_bits: self.data_bits,
+            parity: self.parity,
+            stop_bits: self.stop_bits,
+            flow: self.flow,
+        })
+    }
+}
+
+/// Step an index forward/backward within `0..len`, wrapping.
+fn step(i: usize, len: usize, forward: bool) -> usize {
+    if forward {
+        (i + 1) % len
+    } else {
+        (i + len - 1) % len
+    }
+}
+
+/// Return the option after/before `cur` in `opts` (wrapping); `cur` if absent.
+fn cycle_in<T: Copy + PartialEq>(opts: &[T], cur: T, forward: bool) -> T {
+    match opts.iter().position(|o| *o == cur) {
+        Some(i) => opts[step(i, opts.len(), forward)],
+        None => opts.first().copied().unwrap_or(cur),
+    }
 }
 
 /// State of the macro manager. `macros` is a working copy of the global macros; it
@@ -331,7 +512,8 @@ fn build_expect(edit: &ExpectEdit) -> Result<Expect, String> {
     })
 }
 
-/// A visible line in the host list: either a group header or a host beneath it.
+/// A visible line in the host list: a group header, a host beneath it, or the
+/// always-present action row that opens the console (serial) connection form.
 pub enum Row {
     Group {
         name: String,
@@ -342,6 +524,8 @@ pub enum Row {
         idx: usize,
         icon: String,
     },
+    /// The "＋ Console connection…" action row (always at the top of the list).
+    ConsoleAction,
 }
 
 pub struct App {
@@ -358,6 +542,8 @@ pub struct App {
     pub mode: AppMode,
     pub should_quit: bool,
     pub pending_connect: Option<Host>,
+    /// Set by the console form; the event loop exits and opens the serial port.
+    pub pending_serial: Option<SerialParams>,
     pub status: Option<String>,
     /// Caret position (char index) within the search query.
     pub filter_cursor: usize,
@@ -378,6 +564,7 @@ impl App {
             mode: AppMode::Normal,
             should_quit: false,
             pending_connect: None,
+            pending_serial: None,
             status: None,
             filter_cursor: 0,
             started: std::time::Instant::now(),
@@ -488,10 +675,13 @@ impl App {
             if filtering {
                 order.sort_by(|&a, &b| scores[b].cmp(&scores[a]));
             }
-            self.rows = order
-                .into_iter()
-                .map(|idx| Row::Host { idx, icon: String::new() })
-                .collect();
+            let mut rows = vec![Row::ConsoleAction];
+            rows.extend(
+                order
+                    .into_iter()
+                    .map(|idx| Row::Host { idx, icon: String::new() }),
+            );
+            self.rows = rows;
             self.select_best_or_first_host(best_host);
             return;
         }
@@ -507,7 +697,8 @@ impl App {
             }
         }
 
-        let mut rows = Vec::new();
+        // The console action row is always first, above every group.
+        let mut rows = vec![Row::ConsoleAction];
         for name in &order {
             let mut members: Vec<usize> = visible
                 .iter()
@@ -575,13 +766,16 @@ impl App {
             self.selected = pos;
             return;
         }
-        // Skip initial group headers; select first host row instead.
+        // Skip the leading action row and any group headers; land on the first
+        // host row. If there are no hosts at all, fall back to a valid row (the
+        // action row) so the selection is never out of bounds.
         while self.selected < self.rows.len() {
             match &self.rows[self.selected] {
                 Row::Host { .. } => break,
-                Row::Group { .. } => self.selected += 1,
+                Row::Group { .. } | Row::ConsoleAction => self.selected += 1,
             }
         }
+        self.clamp_selected();
     }
 
     fn clamp_selected(&mut self) {
@@ -597,6 +791,7 @@ impl App {
             AppMode::Credential { .. } => self.update_credential(key),
             AppMode::ConfirmDelete { .. } => self.update_confirm_delete(key),
             AppMode::Macros(_) => self.update_macros(key),
+            AppMode::Console(_) => self.update_console(key),
         }
     }
 
@@ -666,6 +861,11 @@ impl App {
                 });
             }
 
+            // Ctrl+L opens the console (serial) connection form.
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                self.mode = AppMode::Console(ConsoleForm::new());
+            }
+
             KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
                 self.mode = AppMode::Editing {
                     original_idx: None,
@@ -698,6 +898,9 @@ impl App {
                     let host = self.hosts[*idx].clone();
                     self.pending_connect = Some(host);
                     self.should_quit = true;
+                }
+                Some(Row::ConsoleAction) => {
+                    self.mode = AppMode::Console(ConsoleForm::new());
                 }
                 None => {}
             },
@@ -928,6 +1131,98 @@ impl App {
             _ => {
                 let field = if *focused == 0 { reference } else { password };
                 apply_edit_key(field, cursor, key);
+            }
+        }
+    }
+
+    /// Handle a key in the console (serial) connection form. `Tab` moves between
+    /// fields; ↑↓ (and Space/←→ on the Advanced value rows) change the focused
+    /// field's value; Enter connects (or toggles Advanced); Esc cancels.
+    fn update_console(&mut self, key: KeyEvent) {
+        self.status = None;
+        let ctrl = key.modifiers == KeyModifiers::CONTROL;
+        let AppMode::Console(form) = &mut self.mode else {
+            return;
+        };
+        let len = form.fields().len();
+        let current = form.current();
+        let is_enum = matches!(
+            current,
+            CField::DataBits | CField::Parity | CField::StopBits | CField::Flow
+        );
+
+        match key.code {
+            KeyCode::Esc => self.mode = AppMode::Normal,
+
+            // Ctrl+R re-scans for connected serial ports.
+            KeyCode::Char('r') if ctrl => form.ports = crate::serial::list_ports(),
+
+            KeyCode::Tab => {
+                form.focus = (form.focus + 1) % len;
+                form.cursor = form.focus_text_len();
+            }
+            KeyCode::BackTab => {
+                form.focus = (form.focus + len - 1) % len;
+                form.cursor = form.focus_text_len();
+            }
+
+            KeyCode::Up => match current {
+                CField::Device => form.cycle_port(false),
+                CField::Baud => form.cycle_baud(false),
+                _ => form.cycle_value(current, false),
+            },
+            KeyCode::Down => match current {
+                CField::Device => form.cycle_port(true),
+                CField::Baud => form.cycle_baud(true),
+                _ => form.cycle_value(current, true),
+            },
+
+            // ←/→ cycle the Advanced value rows; on text fields they move the caret.
+            KeyCode::Left if is_enum => form.cycle_value(current, false),
+            KeyCode::Right if is_enum => form.cycle_value(current, true),
+
+            KeyCode::Char(' ') if current == CField::Advanced => {
+                form.advanced_open = !form.advanced_open;
+                form.clamp_focus();
+            }
+            KeyCode::Char(' ') if is_enum => form.cycle_value(current, true),
+
+            KeyCode::Enter => {
+                if current == CField::Advanced {
+                    form.advanced_open = !form.advanced_open;
+                    form.clamp_focus();
+                } else {
+                    match form.build_params() {
+                        Ok(params) => {
+                            self.pending_serial = Some(params);
+                            self.should_quit = true;
+                        }
+                        // Disjoint field write (not `set_status`) — `form` still
+                        // borrows `self.mode` here.
+                        Err(e) => self.status = Some(e),
+                    }
+                }
+            }
+
+            // Baud accepts digits only.
+            KeyCode::Char(c)
+                if current == CField::Baud
+                    && !c.is_ascii_digit()
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+
+            // Text editing for Device / Baud (inlined so the field and `cursor` are
+            // seen as disjoint borrows). Non-text fields ignore other keys.
+            _ => {
+                let field: Option<&mut String> = match current {
+                    CField::Device => Some(&mut form.device),
+                    CField::Baud => Some(&mut form.baud),
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    apply_edit_key(field, &mut form.cursor, key);
+                }
             }
         }
     }
@@ -1324,6 +1619,38 @@ mod macro_tests {
         let mut edit = macro_edit("en", &["enable"], vec![]);
         edit.original_idx = Some(0);
         assert!(build_macro(&edit, &existing).is_ok());
+    }
+
+    #[test]
+    fn console_build_params_validates_device_and_baud() {
+        let mut form = ConsoleForm::new();
+        form.device = "/dev/tty.usbserial-1".into();
+        form.baud = "9600".into();
+        let p = form.build_params().expect("valid");
+        assert_eq!(p.device, "/dev/tty.usbserial-1");
+        assert_eq!(p.baud, 9600);
+        assert_eq!(p.log_label(), "tty.usbserial-1");
+
+        form.device = "  ".into();
+        assert!(form.build_params().is_err()); // empty device
+        form.device = "/dev/x".into();
+        form.baud = "abc".into();
+        assert!(form.build_params().is_err()); // non-numeric baud
+        form.baud = "0".into();
+        assert!(form.build_params().is_err()); // zero baud
+    }
+
+    #[test]
+    fn console_baud_cycle_wraps_and_snaps() {
+        let mut form = ConsoleForm::new();
+        form.baud = "115200".into(); // last preset
+        form.cycle_baud(true);
+        assert_eq!(form.baud, "9600"); // wraps to first
+        form.cycle_baud(false);
+        assert_eq!(form.baud, "115200"); // wraps back
+        form.baud = "1234".into(); // not a preset
+        form.cycle_baud(true);
+        assert_eq!(form.baud, "9600"); // snaps to first preset
     }
 
     #[test]

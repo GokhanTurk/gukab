@@ -17,6 +17,8 @@ pub enum SshError {
     Automation(String),
     #[error("SSH key error: {0}")]
     Key(String),
+    #[error("Serial error: {0}")]
+    Serial(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

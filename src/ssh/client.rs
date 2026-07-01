@@ -5,10 +5,10 @@ use russh::{
     keys::PrivateKeyWithHashAlg, mac, ChannelMsg, Preferred,
 };
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
-use tokio::io::AsyncWriteExt;
 
 use crate::{
     config::{Automations, Expect, Host, Macro},
+    session::{self, Incoming, Transport},
     ssh::SshError,
 };
 
@@ -259,7 +259,7 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
         }
     }
     // Compile expect rules before touching the terminal so a bad regex fails cleanly.
-    let mut compiled = build_automations(&expects)?;
+    let mut compiled = session::build_automations(&expects)?;
 
     let mut channel = session.channel_open_session().await?;
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -275,7 +275,7 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     for key in &host.on_connect {
         match macros.iter().find(|m| &m.key == key) {
             Some(m) => {
-                let payload = macro_payload(&m.send);
+                let payload = session::macro_payload(&m.send);
                 if !payload.is_empty() {
                     channel.data(payload.as_bytes()).await?;
                 }
@@ -287,7 +287,12 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     }
 
     // Start session logging (best-effort; never blocks the interactive loop).
-    let log_tx = crate::ssh::session_log::start(host);
+    let log_label = if host.name.trim().is_empty() {
+        host.hostname.as_str()
+    } else {
+        host.name.as_str()
+    };
+    let log_tx = crate::ssh::session_log::start(log_label);
 
     // ratatui hides the cursor while rendering, and leaving the alternate screen
     // does not reliably restore DECTCEM — so explicitly show the cursor before
@@ -300,12 +305,42 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     }
 
     crossterm::terminal::enable_raw_mode()?;
-    let result = io_loop(&mut channel, &macros, &mut compiled, log_tx.as_ref()).await;
+    let mut transport = SshTransport { channel: &mut channel };
+    let result =
+        session::run_session(&mut transport, &macros, &mut compiled, log_tx.as_ref(), None).await;
     // Always restore the local terminal, even if the session errored, so the
     // user's shell is usable again after exiting.
-    restore_terminal();
+    session::restore_terminal();
 
     result
+}
+
+/// [`Transport`] over an SSH channel: writes as channel data, reads channel
+/// messages (mapping stderr `ExtendedData` and treating exit/close as EOF).
+struct SshTransport<'a> {
+    channel: &'a mut russh::Channel<russh::client::Msg>,
+}
+
+impl Transport for SshTransport<'_> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SshError> {
+        self.channel.data(data).await?;
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Option<Incoming> {
+        loop {
+            match self.channel.wait().await {
+                Some(ChannelMsg::Data { ref data }) => {
+                    return Some(Incoming { bytes: data.to_vec(), is_stderr: false });
+                }
+                Some(ChannelMsg::ExtendedData { ref data, .. }) => {
+                    return Some(Incoming { bytes: data.to_vec(), is_stderr: true });
+                }
+                Some(ChannelMsg::ExitStatus { .. }) | None => return None,
+                Some(_) => continue,
+            }
+        }
+    }
 }
 
 /// Load a private key from `path` for public-key auth, decrypting it with
@@ -394,286 +429,4 @@ async fn keyboard_interactive_auth(
         }
     }
     Ok(false)
-}
-
-/// What an expect rule sends when its pattern matches.
-enum Response {
-    /// Literal text to transmit verbatim.
-    Literal(String),
-    /// Keyring reference; the password is read at send time so secrets never sit
-    /// in memory longer than needed.
-    Credential(String),
-}
-
-/// A compiled expect rule with its armed state.
-struct Automation {
-    re: regex::Regex,
-    response: Response,
-    once: bool,
-    fired: bool,
-}
-
-/// Compile expect rules into runnable automations.
-fn build_automations(expects: &[Expect]) -> Result<Vec<Automation>, SshError> {
-    expects.iter().map(build_single_automation).collect()
-}
-
-/// Compile a single expect rule into a runnable automation.
-fn build_single_automation(e: &Expect) -> Result<Automation, SshError> {
-    let re = regex::Regex::new(&e.pattern)
-        .map_err(|err| SshError::Automation(format!("invalid regex `{}`: {err}", e.pattern)))?;
-    let response = match (&e.send, &e.send_credential) {
-        (Some(text), None) => Response::Literal(text.clone()),
-        (None, Some(reference)) => Response::Credential(reference.clone()),
-        (Some(_), Some(_)) => {
-            return Err(SshError::Automation(format!(
-                "expect `{}` sets both `send` and `send_credential`",
-                e.pattern
-            )))
-        }
-        (None, None) => {
-            return Err(SshError::Automation(format!(
-                "expect `{}` has neither `send` nor `send_credential`",
-                e.pattern
-            )))
-        }
-    };
-    Ok(Automation {
-        re,
-        response,
-        once: e.once,
-        fired: false,
-    })
-}
-
-/// Resolve an expect response into the bytes to transmit (response + newline).
-fn resolve_response(response: &Response) -> Result<String, SshError> {
-    let text = match response {
-        Response::Literal(text) => text.clone(),
-        Response::Credential(reference) => keyring::Entry::new("gukab", reference)
-            .and_then(|e| e.get_password())
-            .map_err(|e| SshError::Keyring(e.to_string()))?,
-    };
-    Ok(format!("{text}\n"))
-}
-
-/// Undo the terminal state an interactive remote shell may have left behind.
-/// Disabling raw mode alone is not enough: the remote shell can switch the
-/// terminal into application-cursor-keys / keypad / bracketed-paste modes via
-/// escape sequences that persist locally after the session ends, leaving the
-/// user's shell echoing `^[[` for arrow keys.
-///
-/// We deliberately do NOT send `?1049l` (leave alternate screen): ratatui already
-/// left the alt screen before the SSH session, so re-sending it makes terminals
-/// that honor it (Konsole, Alacritty) run DECRC and jump the cursor back to the
-/// position saved at alt-screen entry — corrupting the post-exit display.
-fn restore_terminal() {
-    use std::io::Write;
-
-    let _ = crossterm::terminal::disable_raw_mode();
-
-    // \x1b[?1l normal cursor keys   \x1b>     normal keypad
-    // \x1b[?2004l no bracketed paste \x1b[?25h show cursor   \x1b[0m reset attrs
-    let reset = "\x1b[?1l\x1b>\x1b[?2004l\x1b[?25h\x1b[0m";
-    let mut stdout = std::io::stdout();
-    let _ = stdout.write_all(reset.as_bytes());
-    let _ = stdout.flush();
-}
-
-/// Local escape prefix (Ctrl+A) that opens the gukab macro prompt instead of
-/// being forwarded to the remote. Pressing it twice sends a literal Ctrl+A.
-const ESCAPE_PREFIX: u8 = 0x01;
-/// Cap for the rolling output buffer scanned by expect rules.
-const SCAN_BUFFER_CAP: usize = 8 * 1024;
-
-async fn io_loop(
-    channel: &mut russh::Channel<russh::client::Msg>,
-    macros: &[Macro],
-    automations: &mut Vec<Automation>,
-    log_tx: Option<&tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-) -> Result<(), SshError> {
-    let mut stdout = tokio::io::stdout();
-    let mut scan_buf = String::new();
-    let mut hl = crate::ssh::highlight::Highlighter::new();
-
-    // Read raw stdin on a dedicated OS thread and forward bytes over an mpsc
-    // channel. `tokio::io::stdin()` is documented as "best for non-interactive
-    // use" and adds per-keystroke latency inside a `select!` loop; a plain
-    // blocking read delivers each keystroke immediately.
-    let mut rx = spawn_stdin_reader();
-
-    loop {
-        tokio::select! {
-            msg = channel.wait() => {
-                match msg {
-                    Some(ChannelMsg::Data { ref data }) => {
-                        // Display gets line-colorized output; logging and expect
-                        // matching use the raw bytes (clean transcript, stable patterns).
-                        let painted = hl.process(data);
-                        stdout.write_all(&painted).await?;
-                        stdout.flush().await?;
-                        if let Some(tx) = log_tx {
-                            let _ = tx.send(data.to_vec());
-                        }
-                        scan_and_respond(data, &mut scan_buf, automations, channel).await?;
-                    }
-                    Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                        stdout.write_all(data).await?;
-                        stdout.flush().await?;
-                        if let Some(tx) = log_tx {
-                            let _ = tx.send(data.to_vec());
-                        }
-                    }
-                    Some(ChannelMsg::ExitStatus { .. }) | None => break,
-                    _ => {}
-                }
-            }
-            bytes = rx.recv() => {
-                match bytes {
-                    Some(bytes) => {
-                        if !forward_stdin(&bytes, macros, channel, automations, &mut rx).await? {
-                            break;
-                        }
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Spawn a blocking thread that reads raw stdin and forwards each read promptly.
-fn spawn_stdin_reader() -> tokio::sync::mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut stdin = std::io::stdin().lock();
-        let mut buf = [0u8; 4096];
-        loop {
-            match stdin.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if tx.blocking_send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    rx
-}
-
-/// Append remote output to the rolling scan buffer and fire any armed expect
-/// rule whose pattern now matches. The buffer is cleared after a match so the
-/// same prompt is not answered twice within one chunk.
-async fn scan_and_respond(
-    data: &[u8],
-    scan_buf: &mut String,
-    automations: &mut [Automation],
-    channel: &mut russh::Channel<russh::client::Msg>,
-) -> Result<(), SshError> {
-    // Nothing armed: skip all buffer/regex work so heavy output stays responsive.
-    if automations.iter().all(|a| a.fired) {
-        return Ok(());
-    }
-    scan_buf.push_str(&String::from_utf8_lossy(data));
-    if scan_buf.len() > SCAN_BUFFER_CAP {
-        let cut = scan_buf.len() - SCAN_BUFFER_CAP;
-        // Keep the tail; advance to a char boundary so the String stays valid.
-        let boundary = (cut..scan_buf.len())
-            .find(|&i| scan_buf.is_char_boundary(i))
-            .unwrap_or(scan_buf.len());
-        *scan_buf = scan_buf[boundary..].to_string();
-    }
-
-    for auto in automations.iter_mut() {
-        if auto.fired || !auto.re.is_match(scan_buf) {
-            continue;
-        }
-        let payload = match resolve_response(&auto.response) {
-            Ok(payload) => payload,
-            // A failed credential lookup (e.g. a missing/mistyped keyring ref) must
-            // NOT tear down the live session — warn once, disarm this rule, and let
-            // the user answer the prompt by hand.
-            Err(e) => {
-                eprint!("\r\n[gukab] automation skipped ({e}); answer the prompt manually.\r\n");
-                auto.fired = true;
-                scan_buf.clear();
-                break;
-            }
-        };
-        channel.data(payload.as_bytes()).await?;
-        if auto.once {
-            auto.fired = true;
-        }
-        scan_buf.clear();
-        break;
-    }
-    Ok(())
-}
-
-/// Forward typed bytes to the remote, intercepting the Ctrl+A escape prefix to
-/// open the local macro prompt. Returns `Ok(false)` if the session should end.
-async fn forward_stdin(
-    bytes: &[u8],
-    macros: &[Macro],
-    channel: &mut russh::Channel<russh::client::Msg>,
-    automations: &mut Vec<Automation>,
-    rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
-) -> Result<bool, SshError> {
-    // Pass straight through unless the escape prefix is present.
-    let Some(pos) = bytes.iter().position(|&b| b == ESCAPE_PREFIX) else {
-        channel.data(bytes).await?;
-        return Ok(true);
-    };
-
-    // Send everything before the prefix verbatim.
-    if pos > 0 {
-        channel.data(&bytes[..pos]).await?;
-    }
-
-    // Ctrl+A Ctrl+A sends a literal Ctrl+A.
-    let rest = &bytes[pos + 1..];
-    if let Some((&ESCAPE_PREFIX, tail)) = rest.split_first() {
-        channel.data(&[ESCAPE_PREFIX][..]).await?;
-        if !tail.is_empty() {
-            channel.data(tail).await?;
-        }
-        return Ok(true);
-    }
-
-    // Open the fuzzy macro picker; any bytes after the prefix seed the query.
-    match crate::ssh::macro_picker::pick(macros, rx, rest).await {
-        crate::ssh::macro_picker::Pick::Run(key) => {
-            if let Some(m) = macros.iter().find(|m| m.key == key) {
-                // Arm this macro's expects for the session (in addition to any
-                // on_connect macros that were already armed at connection time).
-                for expect in &m.expects {
-                    if let Ok(auto) = build_single_automation(expect) {
-                        automations.push(auto);
-                    }
-                }
-                let payload = macro_payload(&m.send);
-                if !payload.is_empty() {
-                    channel.data(payload.as_bytes()).await?;
-                }
-            }
-            Ok(true)
-        }
-        crate::ssh::macro_picker::Pick::Cancel => Ok(true),
-        crate::ssh::macro_picker::Pick::Disconnect => Ok(false),
-    }
-}
-
-/// Turn a macro's `send` (possibly multi-line, TOML triple-quoted) into the bytes
-/// to transmit: each non-empty line terminated by `\r` (Enter / CR `^M`).
-fn macro_payload(send: &str) -> String {
-    send.split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .filter(|line| !line.is_empty())
-        .map(|line| format!("{line}\r"))
-        .collect()
 }

@@ -10,19 +10,15 @@ use std::io::{BufWriter, Write};
 use chrono::Local;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use crate::config::{log_dir, Host};
+use crate::config::log_dir;
 
 /// Start logging this session's remote output. Returns a sender the caller pushes
 /// output chunks into; dropping it flushes and closes the log. Returns `None`
 /// (after a stderr warning) if the log file can't be created — logging must never
-/// abort a connection.
-pub fn start(host: &Host) -> Option<UnboundedSender<Vec<u8>>> {
-    let host_label = if host.name.trim().is_empty() {
-        &host.hostname
-    } else {
-        &host.name
-    };
-    let dir = log_dir().join(sanitize(host_label));
+/// abort a connection. `label` names the per-session folder (host name/hostname for
+/// SSH, device name for serial).
+pub fn start(label: &str) -> Option<UnboundedSender<Vec<u8>>> {
+    let dir = log_dir().join(sanitize(label));
     if let Err(e) = fs::create_dir_all(&dir) {
         eprintln!("[gukab] logging disabled (cannot create {}): {e}", dir.display());
         return None;
@@ -51,11 +47,9 @@ pub fn start(host: &Host) -> Option<UnboundedSender<Vec<u8>>> {
     let mut writer = BufWriter::new(file);
     let _ = writeln!(
         writer,
-        "==== gukab session {} — {}@{}:{} ====",
+        "==== gukab session {} — {} ====",
         now.format("%Y-%m-%d %H:%M:%S"),
-        host.username,
-        host.hostname,
-        host.port
+        label
     );
     let _ = writer.flush();
 

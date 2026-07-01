@@ -3,6 +3,21 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **Serial / console connections.** Connect to a device's console port over a
+  USB-to-serial adapter — no reachable IP required. `Ctrl+L` (or the new
+  **＋ Console connection…** row at the top of the list) opens an ephemeral form
+  (nothing is saved): pick the **device** (auto-detected ports are cycled with ↑↓,
+  `Ctrl+R` rescans, or type a path) and **baud** (↑↓ cycles 9600/19200/38400/57600/
+  115200; default 9600). An **Advanced** section (collapsed by default) exposes data
+  bits / parity / stop bits / flow control — defaults are 8-N-1 with no flow, which
+  fits virtually every network console cable, so you can just connect. A console
+  session has the same features as SSH — `Ctrl+A` macro picker, expect rules, session
+  logging and colorized output — plus **`Ctrl+B` to switch baud rate live** while
+  connected.
+
 ## [1.5.0] - 2026-07-01
 
 ### Added

@@ -20,8 +20,8 @@ HOST LIST KEYS:
     ↑/↓              Navigate            Enter   Connect / toggle group
     Ctrl/Shift+↑↓    Move host in group  Ctrl+N  Add host
     Ctrl+E           Edit host           Ctrl+D  Delete host
-    Ctrl+K           Add credential      Esc     Quit
-    (type)           Fuzzy-filter the list
+    Ctrl+K           Add credential      Ctrl+G  Manage macros
+    Esc              Quit                (type)  Fuzzy-filter the list
 
 IN A SESSION:
     Ctrl+A           Macro picker        Ctrl+A Ctrl+A   Send a literal Ctrl+A

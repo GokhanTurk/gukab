@@ -3,6 +3,18 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.5.0] - 2026-07-01
+
+### Added
+- **In-app macro manager (`Ctrl+G`).** List, add, edit, and delete the global macros
+  in `automations.toml` from inside gukab — no more hand-editing TOML. Each macro's
+  `send` is edited as a list of command lines (Enter adds a line, `Ctrl+D` removes
+  one), and its nested **expect** rules are managed too (`Ctrl+X` add, `Ctrl+E`/Enter
+  edit, `Ctrl+D` delete). Saves are validated to match the automation engine (unique
+  non-empty key, ≥1 command; each expect needs a valid regex and exactly one of
+  `send` / `send_credential`) and written owner-only. A macro edited this session is
+  live on the next connect. Per-host macros are still edited in TOML directly.
+
 ## [1.4.0] - 2026-06-24
 
 ### Added

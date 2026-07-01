@@ -176,6 +176,24 @@ pub fn load_automations() -> Result<Automations, ConfigError> {
     Ok(toml::from_str(&content)?)
 }
 
+/// Persist the global macros (with their nested expects) to `automations.toml`.
+/// Written owner-only; like `save_hosts`, this rewrites the file and does not
+/// preserve hand-written comments.
+pub fn save_automations(automations: &Automations) -> Result<(), ConfigError> {
+    let path = automations_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string(automations)?;
+    std::fs::write(&path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 pub fn load_hosts() -> Result<(Vec<Host>, Vec<Group>), ConfigError> {
     let path = config_path();
     if !path.exists() {

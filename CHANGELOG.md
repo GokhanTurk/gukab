@@ -17,9 +17,10 @@ This project follows [Semantic Versioning](https://semver.org).
   with no flow, which fits virtually every network console cable, so you can just
   connect. A console session has the same features as SSH — `Ctrl+A` macro picker,
   expect rules, session logging and colorized output — and the `Ctrl+A` picker also
-  offers **cycle baud** so you can change speed live. If the port can't be opened for
-  lack of permission, gukab names the exact group to join (e.g. `uucp` on Arch,
-  `dialout` on Debian) — it never runs as root.
+  offers a **baud chooser** (pick a preset with ↑↓ or type a custom rate) to change
+  speed live. If the port can't be opened for lack of permission, gukab names the
+  exact group to join (e.g. `uucp` on Arch, `dialout` on Debian) and how to apply it
+  (log out/in, or `newgrp`) — it never runs as root.
 
 ## [1.5.0] - 2026-07-01
 

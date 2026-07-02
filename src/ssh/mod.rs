@@ -1,3 +1,4 @@
+pub mod baud_picker;
 pub mod client;
 pub mod highlight;
 pub mod macro_picker;

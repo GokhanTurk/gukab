@@ -261,9 +261,11 @@ collapsed **Advanced** row (Enter toggles) exposes data bits / parity / stop bit
 
 A console session has **full parity with SSH** — `Ctrl+A` macro picker, expect rules (armed
 when a macro runs), session logging, output colorization. On serial the `Ctrl+A` picker pins a
-**"↻ cycle baud" entry at the top** (shown only on the empty picker) so you can change baud
-live without a dedicated key (nothing to clash with an outer multiplexer like tmux); serial
-consoles are a baud-guessing game. Only global macros apply (there is no host).
+**"⇅ baud rate…" entry at the top** (shown only on the empty picker); selecting it opens a
+**baud chooser** ([src/ssh/baud_picker.rs](src/ssh/baud_picker.rs)) where `↑↓` picks a preset
+directly or you type a custom rate, `Enter` applies it live. No dedicated key, so nothing
+clashes with an outer multiplexer like tmux; serial consoles are a baud-guessing game. Only
+global macros apply (there is no host).
 
 The device field defaults to the first **auto-detected** port (USB adapters are ranked first
 via `serialport::available_ports` port type), falling back to `/dev/ttyUSB0` on Linux. If the

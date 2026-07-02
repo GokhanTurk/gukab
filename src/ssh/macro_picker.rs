@@ -24,8 +24,8 @@ use crate::fuzzy::fuzzy_score;
 pub enum Pick {
     /// Run the macro with this key.
     Run(String),
-    /// Cycle the serial baud rate (serial sessions only — the pinned top entry).
-    CycleBaud,
+    /// Open the baud chooser (serial sessions only — the pinned top entry).
+    Baud,
     /// Close the picker, keep the session.
     Cancel,
     /// End the SSH session.
@@ -123,7 +123,7 @@ async fn run(
                 b'\r' | b'\n' => {
                     let baud_off = baud_row(&query).is_some() as usize;
                     if baud_off == 1 && selected == 0 {
-                        return Pick::CycleBaud;
+                        return Pick::Baud;
                     }
                     let matches = filter(macros, &query);
                     return match matches.get(selected - baud_off) {
@@ -214,7 +214,7 @@ fn draw(
     let mut items: Vec<ListItem> = Vec::new();
     if let Some(n) = baud {
         items.push(ListItem::new(Line::from(Span::styled(
-            format!("↻  cycle baud  (now {n})"),
+            format!("⇅  baud rate…  (now {n})"),
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ))));
     }

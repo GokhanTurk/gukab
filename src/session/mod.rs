@@ -29,12 +29,13 @@ pub trait Transport {
 
 /// Optional live control surface for a serial session (baud switching). `None`
 /// for SSH. Surfaced as a pinned entry in the `Ctrl+A` picker (no dedicated key,
-/// so nothing clashes with an outer multiplexer like tmux).
+/// so nothing clashes with an outer multiplexer like tmux); selecting it opens a
+/// chooser (pick a preset or type a custom rate).
 pub trait BaudControl {
-    /// The current baud rate (shown in the picker entry).
+    /// The current baud rate (shown in the picker entry / pre-filled in the chooser).
     fn current(&self) -> u32;
-    /// Advance to the next baud rate and return it (applied to the open port).
-    fn cycle(&mut self) -> u32;
+    /// Apply a new baud rate to the open port.
+    fn set_baud(&mut self, baud: u32);
 }
 
 /// Local escape prefix (Ctrl+A) that opens the gukab macro prompt instead of
@@ -318,13 +319,16 @@ async fn forward_stdin<T: Transport>(
         return Ok(true);
     }
 
-    // Open the fuzzy macro picker; on serial it also pins a "cycle baud" entry
+    // Open the fuzzy macro picker; on serial it also pins a "baud rate" entry
     // showing the current baud. Any bytes after the prefix seed the query.
     let baud_now = baud.as_ref().map(|b| b.current());
     match crate::ssh::macro_picker::pick(macros, rx, rest, baud_now).await {
-        crate::ssh::macro_picker::Pick::CycleBaud => {
-            if let Some(ctl) = baud {
-                let n = ctl.cycle();
+        crate::ssh::macro_picker::Pick::Baud => {
+            // Open the baud chooser (pick a preset or type a custom rate).
+            if let Some(ctl) = baud
+                && let Some(n) = crate::ssh::baud_picker::choose(rx, ctl.current()).await
+            {
+                ctl.set_baud(n);
                 local_notice(&format!("baud → {n}"));
             }
             Ok(true)

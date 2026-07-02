@@ -1,0 +1,27 @@
+# Sample (fake) macros used only for the README demo recording.
+
+[[macros]]
+key = "en"
+send = "enable"
+
+  [[macros.expects]]
+  pattern = "[Pp]assword:"
+  send_credential = "enable-secret"
+  once = false
+
+[[macros]]
+key = "sh-run"
+send = "show running-config"
+
+[[macros]]
+key = "save"
+send = "write memory"
+
+[[macros]]
+key = "access-port"
+send = """
+switchport mode access
+switchport access vlan 10
+spanning-tree portfast edge
+spanning-tree bpduguard enable
+"""

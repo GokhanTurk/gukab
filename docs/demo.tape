@@ -56,5 +56,22 @@ Ctrl+E        Sleep 2.6s
 Escape        Sleep 600ms
 Backspace 3   Sleep 400ms
 
+# Macro manager (Ctrl+G): list / add / edit / delete global macros in-app.
+Ctrl+G        Sleep 1.8s
+Down Sleep 400ms
+Down Sleep 400ms
+Down Sleep 400ms
+Sleep 900ms
+Escape        Sleep 700ms
+
+# Console (serial) connection form (Ctrl+L): device + baud, plus a collapsible
+# Advanced section (data/parity/stop/flow).
+Ctrl+L        Sleep 1.6s
+Tab           Sleep 500ms
+Tab           Sleep 500ms
+Enter         Sleep 1.4s
+Sleep 900ms
+Escape        Sleep 700ms
+
 # Quit (Esc — the search box is always live, so q types into it).
 Escape        Sleep 1.2s

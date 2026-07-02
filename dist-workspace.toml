@@ -18,3 +18,8 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-
 # Install to ~/.local/bin (XDG-style, neutral) instead of ~/.cargo/bin — gukab is
 # a standalone binary, not a cargo-installed dev tool.
 install-path = "~/.local/bin"
+
+# System build dependencies. `serialport` links libudev on Linux for serial-port
+# enumeration; the CI runner needs the dev package or the Linux build fails.
+[dist.dependencies.apt]
+libudev-dev = '*'

@@ -3,6 +3,14 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.6.1] - 2026-07-02
+
+### Fixed
+- Linux release build failed to compile (`libudev-sys`): the serial-port support
+  added in 1.6.0 links `libudev` on Linux, which the CI runner lacked, aborting the
+  whole 1.6.0 release. CI now installs `libudev-dev`. (No code changes; 1.6.0's
+  features are unchanged.)
+
 ## [1.6.0] - 2026-07-02
 
 ### Added

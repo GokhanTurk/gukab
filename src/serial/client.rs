@@ -48,12 +48,60 @@ struct BaudCycler {
 }
 
 impl BaudControl for BaudCycler {
+    fn current(&self) -> u32 {
+        BAUD_PRESETS[self.idx]
+    }
+
     fn cycle(&mut self) -> u32 {
         self.idx = (self.idx + 1) % BAUD_PRESETS.len();
         let n = BAUD_PRESETS[self.idx];
         let _ = self.out.send(Out::SetBaud(n));
         n
     }
+}
+
+/// Turn a port-open failure into a user-facing error. Permission-denied (the common
+/// case on Linux, where serial nodes are group-owned) gets a tailored hint naming the
+/// actual group to join — `dialout` on Debian/Ubuntu, `uucp` on Arch, etc.
+fn open_error(device: &str, e: serialport::Error) -> SshError {
+    let permission = matches!(
+        e.kind(),
+        serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied)
+    );
+    if !permission {
+        return SshError::Serial(format!("cannot open {device}: {e}"));
+    }
+    let group = device_group(device).unwrap_or_else(|| "dialout".to_string());
+    SshError::Serial(format!(
+        "permission denied opening {device}.\n\
+         Add yourself to the '{group}' group (one-time), then log out and back in:\n\
+         \x20   sudo usermod -aG {group} $USER\n\
+         Or, to apply it to the current shell only: newgrp {group}"
+    ))
+}
+
+/// Best-effort owning group name of a device file (via `/etc/group`), so the hint
+/// names the right group across distros. `None` if it can't be determined.
+#[cfg(unix)]
+fn device_group(device: &str) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let gid = std::fs::metadata(device).ok()?.gid();
+    let groups = std::fs::read_to_string("/etc/group").ok()?;
+    for line in groups.lines() {
+        // name:passwd:gid:members
+        let mut f = line.split(':');
+        let name = f.next()?;
+        let _passwd = f.next();
+        if f.next().and_then(|g| g.parse::<u32>().ok()) == Some(gid) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn device_group(_device: &str) -> Option<String> {
+    None
 }
 
 /// The blocking thread that owns the port: forwards reads to `tx_in`, and between
@@ -112,7 +160,7 @@ pub async fn connect_serial(
         .flow_control(params.flow_sp())
         .timeout(READ_TIMEOUT)
         .open()
-        .map_err(|e| SshError::Serial(format!("cannot open {}: {e}", params.device)))?;
+        .map_err(|e| open_error(&params.device, e))?;
 
     let (tx_in, rx_in) = mpsc::unbounded_channel::<Incoming>();
     let (tx_out, rx_out) = std_mpsc::channel::<Out>();

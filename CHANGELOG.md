@@ -11,12 +11,15 @@ This project follows [Semantic Versioning](https://semver.org).
   **＋ Console connection…** row at the top of the list) opens an ephemeral form
   (nothing is saved): pick the **device** (auto-detected ports are cycled with ↑↓,
   `Ctrl+R` rescans, or type a path) and **baud** (↑↓ cycles 9600/19200/38400/57600/
-  115200; default 9600). An **Advanced** section (collapsed by default) exposes data
-  bits / parity / stop bits / flow control — defaults are 8-N-1 with no flow, which
-  fits virtually every network console cable, so you can just connect. A console
-  session has the same features as SSH — `Ctrl+A` macro picker, expect rules, session
-  logging and colorized output — plus **`Ctrl+B` to switch baud rate live** while
-  connected.
+  115200; default 9600). The device defaults to the first auto-detected port (USB
+  adapters first), or `/dev/ttyUSB0` on Linux. An **Advanced** section (collapsed by
+  default) exposes data bits / parity / stop bits / flow control — defaults are 8-N-1
+  with no flow, which fits virtually every network console cable, so you can just
+  connect. A console session has the same features as SSH — `Ctrl+A` macro picker,
+  expect rules, session logging and colorized output — and the `Ctrl+A` picker also
+  offers **cycle baud** so you can change speed live. If the port can't be opened for
+  lack of permission, gukab names the exact group to join (e.g. `uucp` on Arch,
+  `dialout` on Debian) — it never runs as root.
 
 ## [1.5.0] - 2026-07-01
 

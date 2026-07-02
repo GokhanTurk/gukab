@@ -24,6 +24,8 @@ use crate::fuzzy::fuzzy_score;
 pub enum Pick {
     /// Run the macro with this key.
     Run(String),
+    /// Cycle the serial baud rate (serial sessions only — the pinned top entry).
+    CycleBaud,
     /// Close the picker, keep the session.
     Cancel,
     /// End the SSH session.
@@ -34,8 +36,15 @@ const ENTER_ALT: &[u8] = b"\x1b[?1049h";
 const LEAVE_ALT: &[u8] = b"\x1b[?1049l";
 
 /// Show the picker and return the user's choice. `seed` pre-fills the query with
-/// any bytes typed in the same chunk as the escape prefix.
-pub async fn pick(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick {
+/// any bytes typed in the same chunk as the escape prefix. `baud_now` — when set
+/// (serial sessions) — pins a "cycle baud" entry at the top of the empty picker,
+/// showing the current baud.
+pub async fn pick(
+    macros: &[Macro],
+    rx: &mut Receiver<Vec<u8>>,
+    seed: &[u8],
+    baud_now: Option<u32>,
+) -> Pick {
     // Switch to the alternate screen so we can draw over the session and restore
     // it untouched afterwards.
     {
@@ -44,7 +53,7 @@ pub async fn pick(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> 
         let _ = out.flush();
     }
 
-    let result = run(macros, rx, seed).await;
+    let result = run(macros, rx, seed, baud_now).await;
 
     {
         let mut out = std::io::stdout();
@@ -54,7 +63,12 @@ pub async fn pick(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> 
     result
 }
 
-async fn run(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick {
+async fn run(
+    macros: &[Macro],
+    rx: &mut Receiver<Vec<u8>>,
+    seed: &[u8],
+    baud_now: Option<u32>,
+) -> Pick {
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = match Terminal::new(backend) {
         Ok(t) => t,
@@ -67,12 +81,20 @@ async fn run(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick 
         .collect::<String>();
     let mut selected = 0usize;
 
+    // The "cycle baud" row is pinned at index 0, but only on the empty picker
+    // (once you type to search macros it disappears).
+    let baud_row = |query: &str| baud_now.filter(|_| query.is_empty());
+    // Total selectable rows = optional baud row + matching macros.
+    let total = |query: &str| filter(macros, query).len() + baud_row(query).is_some() as usize;
+
     loop {
         let matches = filter(macros, &query);
-        if selected >= matches.len() {
-            selected = matches.len().saturating_sub(1);
+        let baud = baud_row(&query);
+        let count = matches.len() + baud.is_some() as usize;
+        if selected >= count {
+            selected = count.saturating_sub(1);
         }
-        let _ = terminal.draw(|f| draw(f, &query, &matches, selected));
+        let _ = terminal.draw(|f| draw(f, &query, &matches, selected, baud));
 
         let Some(chunk) = rx.recv().await else {
             return Pick::Cancel;
@@ -86,7 +108,7 @@ async fn run(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick 
                 continue;
             }
             [0x1b, b'[', b'B'] => {
-                let n = filter(macros, &query).len();
+                let n = total(&query);
                 if n > 0 && selected + 1 < n {
                     selected += 1;
                 }
@@ -99,8 +121,12 @@ async fn run(macros: &[Macro], rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick 
             match b {
                 0x04 => return Pick::Disconnect, // Ctrl+D
                 b'\r' | b'\n' => {
+                    let baud_off = baud_row(&query).is_some() as usize;
+                    if baud_off == 1 && selected == 0 {
+                        return Pick::CycleBaud;
+                    }
                     let matches = filter(macros, &query);
-                    return match matches.get(selected) {
+                    return match matches.get(selected - baud_off) {
                         Some(m) => Pick::Run(m.key.clone()),
                         None => Pick::Cancel,
                     };
@@ -140,7 +166,13 @@ fn filter<'a>(macros: &'a [Macro], query: &str) -> Vec<&'a Macro> {
     scored.into_iter().map(|(_, m)| m).collect()
 }
 
-fn draw(f: &mut ratatui::Frame, query: &str, matches: &[&Macro], selected: usize) {
+fn draw(
+    f: &mut ratatui::Frame,
+    query: &str,
+    matches: &[&Macro],
+    selected: usize,
+    baud: Option<u32>,
+) {
     let area = f.area();
     let width = area.width.min(54);
     let height = area.height.min(16);
@@ -178,22 +210,26 @@ fn draw(f: &mut ratatui::Frame, query: &str, matches: &[&Macro], selected: usize
     let cx = rows[0].x + 2 + query.chars().count() as u16;
     f.set_cursor_position((cx.min(rows[0].x + rows[0].width.saturating_sub(1)), rows[0].y));
 
-    // Macro list with a one-line `send` preview.
-    let items: Vec<ListItem> = matches
-        .iter()
-        .map(|m| {
-            let preview = m.send.lines().next().unwrap_or("");
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{:<12}", m.key),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(preview.to_string(), Style::default().fg(Color::DarkGray)),
-            ]))
-        })
-        .collect();
+    // Optional pinned "cycle baud" row, then the macro list with a one-line preview.
+    let mut items: Vec<ListItem> = Vec::new();
+    if let Some(n) = baud {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("↻  cycle baud  (now {n})"),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))));
+    }
+    items.extend(matches.iter().map(|m| {
+        let preview = m.send.lines().next().unwrap_or("");
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{:<12}", m.key),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(preview.to_string(), Style::default().fg(Color::DarkGray)),
+        ]))
+    }));
     let mut state = ListState::default();
-    if !matches.is_empty() {
+    if !items.is_empty() {
         state.select(Some(selected));
     }
     let list = List::new(items)

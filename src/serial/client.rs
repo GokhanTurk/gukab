@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::config::Automations;
-use crate::serial::{SerialParams, BAUD_PRESETS};
+use crate::serial::SerialParams;
 use crate::session::{self, BaudControl, Incoming, Transport};
 use crate::ssh::SshError;
 
@@ -41,22 +41,20 @@ impl Transport for SerialTransport {
     }
 }
 
-/// Live baud switcher (`Ctrl+B`): cycles the presets and applies each to the port.
-struct BaudCycler {
+/// Live baud control: applies a chosen rate to the open port (via the worker).
+struct SerialBaud {
     out: std_mpsc::Sender<Out>,
-    idx: usize,
+    cur: u32,
 }
 
-impl BaudControl for BaudCycler {
+impl BaudControl for SerialBaud {
     fn current(&self) -> u32 {
-        BAUD_PRESETS[self.idx]
+        self.cur
     }
 
-    fn cycle(&mut self) -> u32 {
-        self.idx = (self.idx + 1) % BAUD_PRESETS.len();
-        let n = BAUD_PRESETS[self.idx];
-        let _ = self.out.send(Out::SetBaud(n));
-        n
+    fn set_baud(&mut self, baud: u32) {
+        self.cur = baud;
+        let _ = self.out.send(Out::SetBaud(baud));
     }
 }
 
@@ -74,9 +72,10 @@ fn open_error(device: &str, e: serialport::Error) -> SshError {
     let group = device_group(device).unwrap_or_else(|| "dialout".to_string());
     SshError::Serial(format!(
         "permission denied opening {device}.\n\
-         Add yourself to the '{group}' group (one-time), then log out and back in:\n\
+         This device is owned by the '{group}' group. Add yourself to it (one-time):\n\
          \x20   sudo usermod -aG {group} $USER\n\
-         Or, to apply it to the current shell only: newgrp {group}"
+         Then LOG OUT and back in for the change to take effect.\n\
+         To use it in the current shell right now (no logout): newgrp {group}"
     ))
 }
 
@@ -167,12 +166,7 @@ pub async fn connect_serial(
     std::thread::spawn(move || serial_worker(port, tx_in, rx_out));
 
     let mut transport = SerialTransport { out: tx_out.clone(), incoming: rx_in };
-    // Start the cycler at the current baud's preset index (or the last preset).
-    let idx = BAUD_PRESETS
-        .iter()
-        .position(|&b| b == params.baud)
-        .unwrap_or(BAUD_PRESETS.len() - 1);
-    let mut baud = BaudCycler { out: tx_out, idx };
+    let mut baud = SerialBaud { out: tx_out, cur: params.baud };
 
     // No host here, so only the global macros apply; a macro's expects are armed
     // when it is run from the Ctrl+A picker (as in an SSH session).

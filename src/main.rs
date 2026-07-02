@@ -28,7 +28,7 @@ HOST LIST KEYS:
 
 IN A SESSION:
     Ctrl+A           Macro picker        Ctrl+A Ctrl+A   Send a literal Ctrl+A
-                     (on a serial console the picker also offers 'cycle baud')
+                     (on a serial console the picker also offers a baud chooser)
 
 CONFIG (~/.config/gukab/):
     hosts.toml        Hosts and groups

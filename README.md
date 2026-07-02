@@ -1,18 +1,25 @@
 # gukab
 
-A terminal-only (TUI) SSH connection manager for network devices. Built in Rust
-with `ratatui` + `russh` (pure-Rust SSH, no OpenSSL). Targets Arch Linux x86_64
-and macOS (Apple Silicon + Intel).
+A terminal-only (TUI) SSH **and serial/console** connection manager for network
+devices. Built in Rust with `ratatui` + `russh` (pure-Rust SSH, no OpenSSL).
+Targets Arch Linux x86_64 and macOS (Apple Silicon + Intel).
 
 ![gukab demo](docs/demo.gif)
 
 - **Fuzzy host search** — type a few characters in any order (`r3` finds
   `router-03`); the closest match floats to the top.
 - **Host groups** — collapsible, per-group icons, indented members.
-- **Session automation** — keyboard macros (`Ctrl+A` fuzzy picker) and
-  regex `expect` rules that auto-answer prompts (e.g. enable passwords).
+- **SSH key auth** — per-host `identity_file`; only the key path is stored, the
+  passphrase (if any) comes from the keychain.
+- **Serial / console connections** — connect to a device console over a USB-serial
+  adapter (`Ctrl+L` or the **＋ Console connection…** row): pick the device
+  (auto-detected ports) and baud, with an Advanced section for data/parity/stop/flow;
+  change baud live from the `Ctrl+A` menu. Nothing is saved.
+- **Session automation** — keyboard macros (`Ctrl+A` fuzzy picker) and regex `expect`
+  rules that auto-answer prompts (e.g. enable passwords). Add/edit macros in-app with
+  the **macro manager** (`Ctrl+G`).
 - **Credentials in the OS keychain** — never written to config files.
-- **Session logging** — every session transcript saved per host.
+- **Session logging** — every session transcript saved per host/device.
 
 ## Install
 
@@ -68,14 +75,20 @@ Run `gukab`. The host list opens with a search box on top.
 |-----|--------|
 | type | live fuzzy-filter the host list |
 | `↑` / `↓` | move selection |
-| `Enter` | connect to host / collapse-expand a group |
+| `Enter` | connect to host / collapse-expand a group / open the console form |
 | `Ctrl+N` | new host form |
 | `Ctrl+E` | edit selected host |
+| `Ctrl+D` | delete selected host |
+| `Ctrl`/`Shift`+`↑`/`↓` | reorder a host within its group |
 | `Ctrl+K` | add a standalone keyring credential |
-| `q` / `Esc` | quit |
+| `Ctrl+G` | macro manager (add / edit / delete global macros) |
+| `Ctrl+L` | console (serial) connection form |
+| `Esc` | quit |
 
 Inside a session, `Ctrl+A` opens the fuzzy **macro picker** (`Enter` runs,
 `Esc` cancels, `Ctrl+D` disconnects, `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`).
+On a serial console the picker also offers a **baud chooser** (pick a preset or type
+a custom rate) to change speed live.
 
 ## Configuration
 

@@ -100,10 +100,13 @@ pub fn list_ports() -> Vec<String> {
 }
 
 /// Default device path when nothing is auto-detected: `/dev/ttyUSB0` on Linux
-/// (the common USB-serial node), empty elsewhere.
+/// (the common USB-serial node), `COM1` on Windows, empty elsewhere (macOS device
+/// nodes are named after the adapter's serial, so there's no sensible default).
 pub fn default_device() -> String {
     if cfg!(target_os = "linux") {
         "/dev/ttyUSB0".to_string()
+    } else if cfg!(windows) {
+        "COM1".to_string()
     } else {
         String::new()
     }

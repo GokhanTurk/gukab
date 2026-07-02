@@ -304,6 +304,7 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
         let _ = out.flush();
     }
 
+    session::prepare_console();
     crossterm::terminal::enable_raw_mode()?;
     let mut transport = SshTransport { channel: &mut channel };
     let result =

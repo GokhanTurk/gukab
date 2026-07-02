@@ -122,32 +122,68 @@ fn default_true() -> bool {
     true
 }
 
+/// The user's home directory: `$HOME` on Unix, `%USERPROFILE%` (falling back to
+/// `$HOME`) on Windows. `None` if none is set.
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let vars: &[&str] = &["USERPROFILE", "HOME"];
+    #[cfg(not(windows))]
+    let vars: &[&str] = &["HOME"];
+    for var in vars {
+        if let Ok(v) = std::env::var(var)
+            && !v.is_empty()
+        {
+            return Some(PathBuf::from(v));
+        }
+    }
+    None
+}
+
 /// Expand a leading `~` or `$HOME` in a path to the user's home directory.
 /// Only a leading `~`/`~/` (and `$HOME` prefix) is expanded; embedded `~` is left
-/// alone. Returns the input unchanged if `$HOME` is unset.
+/// alone. Returns the input unchanged if the home directory is unknown.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    let home = match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() => h,
-        _ => return PathBuf::from(path),
+    let home = match home_dir() {
+        Some(h) => h,
+        None => return PathBuf::from(path),
     };
     if path == "~" {
-        return PathBuf::from(home);
+        return home;
     }
     if let Some(rest) = path.strip_prefix("~/") {
-        return PathBuf::from(home).join(rest);
+        return home.join(rest);
     }
     if let Some(rest) = path.strip_prefix("$HOME/") {
-        return PathBuf::from(home).join(rest);
+        return home.join(rest);
     }
     if path == "$HOME" {
-        return PathBuf::from(home);
+        return home;
     }
     PathBuf::from(path)
 }
 
+/// Base config directory: `%APPDATA%\gukab` on Windows (falling back to
+/// `%USERPROFILE%\.config\gukab`).
+#[cfg(windows)]
 fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("gukab")
+    if let Ok(appdata) = std::env::var("APPDATA")
+        && !appdata.is_empty()
+    {
+        return PathBuf::from(appdata).join("gukab");
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join("gukab")
+}
+
+/// Base config directory: `~/.config/gukab` on Unix.
+#[cfg(not(windows))]
+fn config_dir() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join("gukab")
 }
 
 pub fn config_path() -> PathBuf {
@@ -223,7 +259,9 @@ pub fn save_hosts(hosts: &[Host], groups: &[Group]) -> Result<(), ConfigError> {
     Ok(())
 }
 
-#[cfg(test)]
+// Unix-only: asserts against `/home/...` paths and drives `HOME` (on Windows the
+// home dir comes from `%USERPROFILE%`).
+#[cfg(all(test, unix))]
 mod tests {
     use super::expand_tilde;
     use std::path::PathBuf;

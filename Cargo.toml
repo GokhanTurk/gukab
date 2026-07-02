@@ -25,6 +25,11 @@ regex = "1"
 chrono = "0.4"
 serialport = "4"
 
+# Windows-only: enable VT (ANSI) processing on the console output so the remote's
+# escape sequences render during an interactive session.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }
+
 # Optimize dependencies even in dev builds so `cargo run` isn't crippled by
 # unoptimized crypto (russh + ring). Our own crate stays at debug opt-level for
 # fast incremental builds and debuggability; only third-party deps are optimized.

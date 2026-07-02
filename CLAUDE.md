@@ -4,7 +4,14 @@ This file documents the architecture and conventions for working in this reposit
 
 ## Project
 
-**gukab** is a terminal-only (TUI) SSH connection manager. Target platforms: macOS (Intel x86_64 + Apple Silicon aarch64) and Arch Linux x86_64.
+**gukab** is a terminal-only (TUI) SSH + serial/console connection manager. Target
+platforms: macOS (Intel x86_64 + Apple Silicon aarch64), Arch Linux x86_64, and
+Windows 10 1809+ (Windows Terminal). Config lives in `~/.config/gukab/` on Unix and
+`%APPDATA%\gukab\` on Windows ([src/config/mod.rs](src/config/mod.rs) `config_dir`).
+Platform-specific code is `#[cfg]`-gated; the in-session input reader is split
+(Unix reads the raw stdin byte stream; Windows encodes crossterm key events to VT
+bytes in [src/session/mod.rs](src/session/mod.rs) `encode_event`), and
+`session::prepare_console()` enables VT output on Windows.
 
 ## Stack
 

@@ -1,0 +1,25 @@
+name: windows-check
+
+# Verifies the Windows (#[cfg(windows)]) code compiles, links, and passes tests on a
+# real windows-latest runner — the maintainer develops on macOS and can't build the
+# Windows target locally. Runs on the windows-support branch and on demand.
+on:
+  push:
+    branches: [windows-support]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --verbose
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --verbose

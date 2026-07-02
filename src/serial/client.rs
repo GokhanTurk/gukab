@@ -69,14 +69,30 @@ fn open_error(device: &str, e: serialport::Error) -> SshError {
     if !permission {
         return SshError::Serial(format!("cannot open {device}: {e}"));
     }
-    let group = device_group(device).unwrap_or_else(|| "dialout".to_string());
-    SshError::Serial(format!(
-        "permission denied opening {device}.\n\
-         This device is owned by the '{group}' group. Add yourself to it (one-time):\n\
-         \x20   sudo usermod -aG {group} $USER\n\
-         Then LOG OUT and back in for the change to take effect.\n\
-         To use it in the current shell right now (no logout): newgrp {group}"
-    ))
+    #[cfg(windows)]
+    {
+        SshError::Serial(format!(
+            "access denied opening {device} — the port may be open in another program \
+             (close the other terminal / PuTTY), or the name may be wrong."
+        ))
+    }
+    #[cfg(unix)]
+    {
+        // Serial nodes are group-owned; name the actual owning group so the hint is
+        // right across distros (`dialout` on Debian/Ubuntu, `uucp` on Arch, etc.).
+        let group = device_group(device).unwrap_or_else(|| "dialout".to_string());
+        SshError::Serial(format!(
+            "permission denied opening {device}.\n\
+             This device is owned by the '{group}' group. Add yourself to it (one-time):\n\
+             \x20   sudo usermod -aG {group} $USER\n\
+             Then LOG OUT and back in for the change to take effect.\n\
+             To use it in the current shell right now (no logout): newgrp {group}"
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        SshError::Serial(format!("permission denied opening {device}"))
+    }
 }
 
 /// Best-effort owning group name of a device file (via `/etc/group`), so the hint
@@ -95,11 +111,6 @@ fn device_group(device: &str) -> Option<String> {
             return Some(name.to_string());
         }
     }
-    None
-}
-
-#[cfg(not(unix))]
-fn device_group(_device: &str) -> Option<String> {
     None
 }
 
@@ -182,6 +193,7 @@ pub async fn connect_serial(
         let _ = out.flush();
     }
 
+    session::prepare_console();
     crossterm::terminal::enable_raw_mode()?;
     let result = session::run_session(
         &mut transport,

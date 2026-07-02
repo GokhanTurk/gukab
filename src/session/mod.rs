@@ -217,6 +217,10 @@ pub async fn run_session<T: Transport>(
 }
 
 /// Spawn a blocking thread that reads raw stdin and forwards each read promptly.
+///
+/// Unix: the terminal is in raw mode, so `stdin` already delivers the exact VT byte
+/// stream (arrows, `Ctrl+…`, etc.) we forward to the remote.
+#[cfg(unix)]
 fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     std::thread::spawn(move || {
@@ -236,6 +240,140 @@ fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
         }
     });
     rx
+}
+
+/// Windows: the console doesn't hand us a raw VT byte stream, so read crossterm key
+/// events and encode them to the same VT byte sequences the pickers/remote expect.
+#[cfg(windows)]
+fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || loop {
+        match crossterm::event::read() {
+            Ok(ev) => {
+                let bytes = encode_event(ev);
+                if bytes.is_empty() {
+                    continue;
+                }
+                if tx.blocking_send(bytes).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    });
+    rx
+}
+
+/// (Windows) Encode a crossterm event into the VT byte sequence to send to the
+/// remote/device — the inverse of what the pickers parse.
+#[cfg(windows)]
+fn encode_event(ev: crossterm::event::Event) -> Vec<u8> {
+    use crossterm::event::{Event, KeyEventKind};
+    match ev {
+        Event::Key(k) => {
+            // Windows emits Press/Repeat/Release; only send presses & repeats.
+            if k.kind == KeyEventKind::Release {
+                Vec::new()
+            } else {
+                encode_key(k.code, k.modifiers)
+            }
+        }
+        Event::Paste(s) => s.into_bytes(),
+        _ => Vec::new(),
+    }
+}
+
+/// (Windows) Map a key + modifiers to its terminal byte sequence.
+#[cfg(windows)]
+fn encode_key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> Vec<u8> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
+    let mut out = Vec::new();
+    match code {
+        KeyCode::Char(c) => {
+            if alt {
+                out.push(0x1b); // Alt = ESC prefix
+            }
+            if ctrl {
+                out.push(control_byte(c));
+            } else {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        KeyCode::Enter => out.push(b'\r'),
+        KeyCode::Tab => out.push(b'\t'),
+        KeyCode::BackTab => out.extend_from_slice(b"\x1b[Z"),
+        KeyCode::Backspace => out.push(0x7f),
+        KeyCode::Esc => out.push(0x1b),
+        KeyCode::Left => out.extend_from_slice(b"\x1b[D"),
+        KeyCode::Right => out.extend_from_slice(b"\x1b[C"),
+        KeyCode::Up => out.extend_from_slice(b"\x1b[A"),
+        KeyCode::Down => out.extend_from_slice(b"\x1b[B"),
+        KeyCode::Home => out.extend_from_slice(b"\x1b[H"),
+        KeyCode::End => out.extend_from_slice(b"\x1b[F"),
+        KeyCode::PageUp => out.extend_from_slice(b"\x1b[5~"),
+        KeyCode::PageDown => out.extend_from_slice(b"\x1b[6~"),
+        KeyCode::Delete => out.extend_from_slice(b"\x1b[3~"),
+        KeyCode::Insert => out.extend_from_slice(b"\x1b[2~"),
+        KeyCode::F(n) => out.extend_from_slice(f_key(n)),
+        _ => {}
+    }
+    out
+}
+
+/// (Windows) The control byte for `Ctrl+<c>` (e.g. `Ctrl+A` → 0x01, `Ctrl+C` → 0x03).
+#[cfg(windows)]
+fn control_byte(c: char) -> u8 {
+    let u = c.to_ascii_uppercase() as u8;
+    match u {
+        // '@' A..Z '[' '\' ']' '^' '_'  →  0x00..=0x1f
+        0x40..=0x5f => u & 0x1f,
+        b' ' => 0x00,
+        b'?' => 0x7f,
+        _ => (c as u8) & 0x1f,
+    }
+}
+
+/// (Windows) Standard xterm sequences for the function keys.
+#[cfg(windows)]
+fn f_key(n: u8) -> &'static [u8] {
+    match n {
+        1 => b"\x1bOP",
+        2 => b"\x1bOQ",
+        3 => b"\x1bOR",
+        4 => b"\x1bOS",
+        5 => b"\x1b[15~",
+        6 => b"\x1b[17~",
+        7 => b"\x1b[18~",
+        8 => b"\x1b[19~",
+        9 => b"\x1b[20~",
+        10 => b"\x1b[21~",
+        11 => b"\x1b[23~",
+        12 => b"\x1b[24~",
+        _ => b"",
+    }
+}
+
+/// Prepare the console for the interactive session. No-op on Unix; on Windows it
+/// enables `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on stdout so the remote/device's ANSI
+/// escapes (colors, cursor moves, alt-screen) render. Call before `enable_raw_mode`.
+pub fn prepare_console() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+            STD_OUTPUT_HANDLE,
+        };
+        unsafe {
+            let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+            let mut mode: u32 = 0;
+            if GetConsoleMode(handle, &mut mode) != 0 {
+                let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            }
+        }
+    }
 }
 
 /// Append output to the rolling scan buffer and fire any armed expect rule whose

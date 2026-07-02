@@ -3,7 +3,7 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [1.6.0] - 2026-07-02
 
 ### Added
 - **Serial / console connections.** Connect to a device's console port over a

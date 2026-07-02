@@ -4,7 +4,7 @@
 
 pub mod client;
 
-use serialport::{DataBits, FlowControl, Parity as SpParity, StopBits};
+use serialport::{DataBits, FlowControl, Parity as SpParity, SerialPortType, StopBits};
 
 /// Baud rates offered as presets in the form and cycled live with `Ctrl+B`.
 pub const BAUD_PRESETS: [u32; 5] = [9600, 19200, 38400, 57600, 115200];
@@ -82,12 +82,29 @@ impl SerialParams {
     }
 }
 
-/// Detected serial ports (sorted), for the form's device picker. Best-effort:
-/// returns an empty list if enumeration fails or is unsupported.
+/// Detected serial ports for the form's device picker, **USB adapters first**
+/// (the actually-connected console cable), then others, each alphabetically.
+/// Best-effort: returns an empty list if enumeration fails or is unsupported.
 pub fn list_ports() -> Vec<String> {
-    let mut names: Vec<String> = serialport::available_ports()
-        .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
-        .unwrap_or_default();
-    names.sort();
-    names
+    let mut ports = serialport::available_ports().unwrap_or_default();
+    let rank = |t: &SerialPortType| match t {
+        SerialPortType::UsbPort(_) => 0,
+        _ => 1,
+    };
+    ports.sort_by(|a, b| {
+        rank(&a.port_type)
+            .cmp(&rank(&b.port_type))
+            .then_with(|| a.port_name.cmp(&b.port_name))
+    });
+    ports.into_iter().map(|p| p.port_name).collect()
+}
+
+/// Default device path when nothing is auto-detected: `/dev/ttyUSB0` on Linux
+/// (the common USB-serial node), empty elsewhere.
+pub fn default_device() -> String {
+    if cfg!(target_os = "linux") {
+        "/dev/ttyUSB0".to_string()
+    } else {
+        String::new()
+    }
 }

@@ -28,8 +28,11 @@ pub trait Transport {
 }
 
 /// Optional live control surface for a serial session (baud switching). `None`
-/// for SSH, where the `Ctrl+B` cycle key is forwarded normally instead.
+/// for SSH. Surfaced as a pinned entry in the `Ctrl+A` picker (no dedicated key,
+/// so nothing clashes with an outer multiplexer like tmux).
 pub trait BaudControl {
+    /// The current baud rate (shown in the picker entry).
+    fn current(&self) -> u32;
     /// Advance to the next baud rate and return it (applied to the open port).
     fn cycle(&mut self) -> u32;
 }
@@ -37,9 +40,6 @@ pub trait BaudControl {
 /// Local escape prefix (Ctrl+A) that opens the gukab macro prompt instead of
 /// being forwarded. Pressing it twice sends a literal Ctrl+A.
 pub const ESCAPE_PREFIX: u8 = 0x01;
-/// Ctrl+B — cycles the serial baud rate (only intercepted when a [`BaudControl`]
-/// is present; forwarded verbatim on SSH).
-const BAUD_CYCLE_KEY: u8 = 0x02;
 /// Cap for the rolling output buffer scanned by expect rules.
 const SCAN_BUFFER_CAP: usize = 8 * 1024;
 
@@ -287,8 +287,8 @@ async fn scan_and_respond<T: Transport>(
 }
 
 /// Forward typed bytes to the transport, intercepting the Ctrl+A escape prefix
-/// (macro prompt) and, on serial, Ctrl+B (baud cycle). Returns `Ok(false)` if the
-/// session should end.
+/// (macro prompt, which on serial also offers "cycle baud"). Returns `Ok(false)`
+/// if the session should end.
 async fn forward_stdin<T: Transport>(
     bytes: &[u8],
     macros: &[Macro],
@@ -297,22 +297,6 @@ async fn forward_stdin<T: Transport>(
     rx: &mut Receiver<Vec<u8>>,
     baud: Option<&mut dyn BaudControl>,
 ) -> Result<bool, SshError> {
-    // Serial-only: Ctrl+B cycles the baud rate. Bytes around it pass through.
-    if let Some(pos) = bytes.iter().position(|&b| b == BAUD_CYCLE_KEY)
-        && let Some(ctl) = baud
-    {
-        if pos > 0 {
-            transport.write(&bytes[..pos]).await?;
-        }
-        let n = ctl.cycle();
-        local_notice(&format!("baud → {n}"));
-        let rest = &bytes[pos + 1..];
-        if !rest.is_empty() {
-            transport.write(rest).await?;
-        }
-        return Ok(true);
-    }
-
     // Pass straight through unless the escape prefix is present.
     let Some(pos) = bytes.iter().position(|&b| b == ESCAPE_PREFIX) else {
         transport.write(bytes).await?;
@@ -334,8 +318,17 @@ async fn forward_stdin<T: Transport>(
         return Ok(true);
     }
 
-    // Open the fuzzy macro picker; any bytes after the prefix seed the query.
-    match crate::ssh::macro_picker::pick(macros, rx, rest).await {
+    // Open the fuzzy macro picker; on serial it also pins a "cycle baud" entry
+    // showing the current baud. Any bytes after the prefix seed the query.
+    let baud_now = baud.as_ref().map(|b| b.current());
+    match crate::ssh::macro_picker::pick(macros, rx, rest, baud_now).await {
+        crate::ssh::macro_picker::Pick::CycleBaud => {
+            if let Some(ctl) = baud {
+                let n = ctl.cycle();
+                local_notice(&format!("baud → {n}"));
+            }
+            Ok(true)
+        }
         crate::ssh::macro_picker::Pick::Run(key) => {
             if let Some(m) = macros.iter().find(|m| m.key == key) {
                 // Arm this macro's expects for the session (in addition to any

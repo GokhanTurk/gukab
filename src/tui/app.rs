@@ -168,7 +168,12 @@ impl Default for ConsoleForm {
 impl ConsoleForm {
     pub fn new() -> Self {
         let ports = crate::serial::list_ports();
-        let device = ports.first().cloned().unwrap_or_default();
+        // Prefer the first detected port (USB adapters are ranked first); otherwise
+        // fall back to the common Linux node so the field isn't blank.
+        let device = ports
+            .first()
+            .cloned()
+            .unwrap_or_else(crate::serial::default_device);
         let cursor = device.chars().count();
         Self {
             ports,

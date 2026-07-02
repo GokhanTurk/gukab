@@ -260,9 +260,17 @@ collapsed **Advanced** row (Enter toggles) exposes data bits / parity / stop bit
 [src/tui/mod.rs](src/tui/mod.rs) then calls `serial::client::connect_serial`.
 
 A console session has **full parity with SSH** — `Ctrl+A` macro picker, expect rules (armed
-when a macro runs), session logging, output colorization — plus **`Ctrl+B` to cycle the baud
-rate live** (serial consoles are a baud-guessing game). Only global macros apply (there is no
-host).
+when a macro runs), session logging, output colorization. On serial the `Ctrl+A` picker pins a
+**"↻ cycle baud" entry at the top** (shown only on the empty picker) so you can change baud
+live without a dedicated key (nothing to clash with an outer multiplexer like tmux); serial
+consoles are a baud-guessing game. Only global macros apply (there is no host).
+
+The device field defaults to the first **auto-detected** port (USB adapters are ranked first
+via `serialport::available_ports` port type), falling back to `/dev/ttyUSB0` on Linux. If the
+port can't be opened for lack of permission (Linux serial nodes are group-owned), gukab prints
+the exact one-time fix — resolving the device's **actual** owning group from `/etc/group`
+(`dialout` on Debian/Ubuntu, `uucp` on Arch): `sudo usermod -aG <group> $USER`. gukab itself
+is never run as root, so config stays under your user.
 
 **One transport-agnostic engine.** The interactive loop is
 [src/session/mod.rs](src/session/mod.rs) `run_session`, generic over a `Transport` trait

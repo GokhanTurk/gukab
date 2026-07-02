@@ -377,6 +377,7 @@ fn load_identity(path: &str, passphrase: Option<&str>) -> Result<PrivateKey, Ssh
 /// Warn (stderr) if a key file is readable or writable by group/other, mirroring
 /// OpenSSH's "UNPROTECTED PRIVATE KEY FILE" advisory. Best-effort; non-Unix and
 /// stat failures are silently ignored.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn warn_if_world_readable(path: &std::path::Path) {
     #[cfg(unix)]
     {

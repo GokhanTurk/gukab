@@ -247,18 +247,15 @@ fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
 #[cfg(windows)]
 fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-    std::thread::spawn(move || loop {
-        match crossterm::event::read() {
-            Ok(ev) => {
-                let bytes = encode_event(ev);
-                if bytes.is_empty() {
-                    continue;
-                }
-                if tx.blocking_send(bytes).is_err() {
-                    break;
-                }
+    std::thread::spawn(move || {
+        while let Ok(ev) = crossterm::event::read() {
+            let bytes = encode_event(ev);
+            if bytes.is_empty() {
+                continue;
             }
-            Err(_) => break,
+            if tx.blocking_send(bytes).is_err() {
+                break;
+            }
         }
     });
     rx

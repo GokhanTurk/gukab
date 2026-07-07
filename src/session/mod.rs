@@ -289,12 +289,17 @@ fn encode_key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifi
     let mut out = Vec::new();
     match code {
         KeyCode::Char(c) => {
-            if alt {
-                out.push(0x1b); // Alt = ESC prefix
-            }
-            if ctrl {
+            if ctrl && alt {
+                // AltGr: Windows reports it as Ctrl+Alt with the layout-resolved
+                // char (@ $ € on e.g. Turkish/German layouts) — send as plain text.
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            } else if ctrl {
                 out.push(control_byte(c));
             } else {
+                if alt {
+                    out.push(0x1b); // Alt = ESC prefix
+                }
                 let mut buf = [0u8; 4];
                 out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
             }

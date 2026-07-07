@@ -1082,13 +1082,11 @@ impl App {
                 self.mode = AppMode::Normal;
             }
 
-            // Port field accepts digits only.
+            // Port field accepts digits only (AltGr symbols count as text too).
             KeyCode::Char(c)
                 if *focused_field == PORT_FIELD_IDX
                     && !c.is_ascii_digit()
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+                    && is_text_key(key.modifiers) => {}
 
             // Text editing (insert / Backspace / Delete / Left / Right / Home / End).
             _ => {
@@ -1209,13 +1207,11 @@ impl App {
                 }
             }
 
-            // Baud accepts digits only.
+            // Baud accepts digits only (AltGr symbols count as text too).
             KeyCode::Char(c)
                 if current == CField::Baud
                     && !c.is_ascii_digit()
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+                    && is_text_key(key.modifiers) => {}
 
             // Text editing for Device / Baud (inlined so the field and `cursor` are
             // seen as disjoint borrows). Non-text fields ignore other keys.
@@ -1525,12 +1521,10 @@ fn apply_edit_key(text: &mut String, cursor: &mut usize, key: KeyEvent) -> EditO
             }
             consumed = true;
         }
-        // Only plain (or Shift) chars are text; Ctrl/Alt combos are left for callers.
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
-        {
+        // Only plain (or Shift) chars are text; Ctrl/Alt combos are left for
+        // callers — except Ctrl+Alt *together*, which is how Windows reports AltGr
+        // (the @ $ € key on e.g. Turkish/German layouts), with the resolved char.
+        KeyCode::Char(c) if is_text_key(key.modifiers) => {
             let byte = char_byte_index(text, *cursor);
             text.insert(byte, c);
             *cursor += 1;
@@ -1540,6 +1534,14 @@ fn apply_edit_key(text: &mut String, cursor: &mut usize, key: KeyEvent) -> EditO
         _ => consumed = false,
     }
     EditOutcome { consumed, changed }
+}
+
+/// True when a `Char` key event is typed text. Plain and Shifted chars qualify;
+/// so does Ctrl+Alt together — Windows delivers AltGr as CONTROL|ALT with the
+/// layout-resolved character, so rejecting it would make @ $ € untypeable there.
+fn is_text_key(mods: KeyModifiers) -> bool {
+    mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        || !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
 }
 
 /// Byte offset of the `char_idx`-th character (or `s.len()` at/after the end).

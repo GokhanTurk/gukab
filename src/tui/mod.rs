@@ -3,7 +3,7 @@ pub mod ui;
 
 use std::time::Duration;
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEventKind};
 use thiserror::Error;
 
 use crate::{
@@ -55,6 +55,10 @@ async fn event_loop(
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
+            // Windows delivers a Release event per keystroke (and the Enter that
+            // launched gukab from the shell arrives as a stray Release, which used
+            // to "press" the selected row on startup). Only act on Press/Repeat.
+            && key.kind != KeyEventKind::Release
         {
             app.update(key);
         }

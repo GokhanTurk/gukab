@@ -13,13 +13,13 @@ installers = ["shell", "powershell"]
 # brew-upgrade style, without re-running the install one-liner.
 install-updater = true
 # Target platforms to build apps for (Rust target-triple syntax).
-# Project supports macOS (Intel + Apple Silicon), Arch Linux x86_64, and
-# Windows 10 1809+ x86_64 (the .exe static-links the MSVC CRT via .cargo/config.toml).
+# Project supports Arch Linux x86_64, Windows 10 1809+ x86_64 (the .exe
+# static-links the MSVC CRT via .cargo/config.toml), and macOS (Intel + Apple Silicon).
 targets = [
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
 ]
 # Install to ~/.local/bin (XDG-style, neutral) instead of ~/.cargo/bin — gukab is
 # a standalone binary, not a cargo-installed dev tool.

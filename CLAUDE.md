@@ -5,8 +5,10 @@ This file documents the architecture and conventions for working in this reposit
 ## Project
 
 **gukab** is a terminal-only (TUI) SSH + serial/console connection manager. Target
-platforms: macOS (Intel x86_64 + Apple Silicon aarch64), Arch Linux x86_64, and
-Windows 10 1809+ (Windows Terminal). Config lives in `~/.config/gukab/` on Unix and
+platforms: Arch Linux x86_64, Windows 10 1809+ (Windows Terminal), and macOS
+(Intel x86_64 + Apple Silicon aarch64). When platforms are listed in any text (docs,
+About, release notes), the order is **Linux, Windows, macOS** (user preference).
+Config lives in `~/.config/gukab/` on Unix and
 `%APPDATA%\gukab\` on Windows ([src/config/mod.rs](src/config/mod.rs) `config_dir`).
 Platform-specific code is `#[cfg]`-gated; the in-session input reader is split
 (Unix reads the raw stdin byte stream; Windows encodes crossterm key events to VT
@@ -21,7 +23,7 @@ bytes in [src/session/mod.rs](src/session/mod.rs) `encode_event`), and
 - `nucleo` — fuzzy finder
 - `serde` + `toml` — config parsing
 - `keyring` `3.x` — credential storage via OS keychain (keyring 4.x is a CLI tool, not a library)
-- `serialport` `4.x` — pure-Rust serial/console I/O (macOS IOKit, Linux libudev — no
+- `serialport` `4.x` — pure-Rust serial/console I/O (Linux libudev, macOS IOKit — no
   openssl-sys); `libudev` is only used for port enumeration (`available_ports`)
 - `tokio` — async runtime
 - `thiserror` — centralized `Error` enum

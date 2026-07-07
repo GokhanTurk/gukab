@@ -7,7 +7,7 @@ This project follows [Semantic Versioning](https://semver.org).
 
 ### Added
 - **Windows support** (Windows 10 1809+ / Windows Terminal). SSH and serial (`COMx`)
-  consoles work with the same features as macOS/Linux — fuzzy list, groups, macros,
+  consoles work with the same features as Linux/macOS — fuzzy list, groups, macros,
   expect rules, logging, colorized output. Credentials use the Windows Credential
   Manager. Config/logs live in `%APPDATA%\gukab\`. In-session keyboard input is
   encoded from console key events to VT sequences, and ANSI output is enabled on the

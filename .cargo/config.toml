@@ -1,0 +1,6 @@
+# Statically link the MSVC C runtime on Windows so the release .exe runs on a clean
+# machine without the "Visual C++ Redistributable" (otherwise it fails to start with
+# "VCRUNTIME140.dll was not found"). This only affects the Windows MSVC target; macOS
+# and Linux builds are untouched.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

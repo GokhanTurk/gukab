@@ -11,7 +11,8 @@ This project follows [Semantic Versioning](https://semver.org).
   expect rules, logging, colorized output. Credentials use the Windows Credential
   Manager. Config/logs live in `%APPDATA%\gukab\`. In-session keyboard input is
   encoded from console key events to VT sequences, and ANSI output is enabled on the
-  console automatically.
+  console automatically. The Windows binary statically links the MSVC C runtime, so it
+  runs on a clean machine with no Visual C++ Redistributable install.
 
 ## [1.6.1] - 2026-07-02
 

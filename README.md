@@ -2,7 +2,8 @@
 
 A terminal-only (TUI) SSH **and serial/console** connection manager for network
 devices. Built in Rust with `ratatui` + `russh` (pure-Rust SSH, no OpenSSL).
-Targets Arch Linux x86_64 and macOS (Apple Silicon + Intel).
+Targets macOS (Apple Silicon + Intel), Arch Linux x86_64, and Windows 10/11
+(Windows Terminal).
 
 ![gukab demo](docs/demo.gif)
 
@@ -34,6 +35,17 @@ This downloads the right prebuilt binary for your platform (x86_64 Linux, or
 Apple Silicon / Intel Mac), installs it to `~/.local/bin` (or `~/.cargo/bin`),
 and puts it on your `PATH`. No Rust toolchain required.
 
+### Windows — one-liner (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/GokhanTurk/gukab/releases/latest/download/gukab-installer.ps1 | iex"
+```
+
+Requires Windows 10 1809+ and [Windows Terminal](https://aka.ms/terminal) is
+recommended. The binary is fully self-contained (no Visual C++ Redistributable
+needed). Config and logs live in `%APPDATA%\gukab\`; credentials go to the
+Windows Credential Manager.
+
 ### Manual download
 
 Grab the archive for your platform from the
@@ -45,6 +57,7 @@ it, and move the `gukab` binary somewhere on your `PATH`:
 | Linux x86_64 (Arch) | `gukab-x86_64-unknown-linux-gnu.tar.xz` |
 | Apple Silicon Mac | `gukab-aarch64-apple-darwin.tar.xz` |
 | Intel Mac | `gukab-x86_64-apple-darwin.tar.xz` |
+| Windows x86_64 | `gukab-x86_64-pc-windows-msvc.zip` |
 
 ### From source
 
@@ -92,7 +105,7 @@ a custom rate) to change speed live.
 
 ## Configuration
 
-Config lives in `~/.config/gukab/`:
+Config lives in `~/.config/gukab/` (Windows: `%APPDATA%\gukab\`):
 
 - `hosts.toml` — hosts and `[[groups]]` (icons, membership).
 - `automations.toml` — reusable macros and their `expect` rules.
@@ -117,6 +130,8 @@ Copy-paste starting points (fully commented):
 - **File permissions:** `hosts.toml`, `known_hosts`, and session logs are written
   owner-only (`0600`), log directories `0700`. Session logs can contain sensitive
   command output (e.g. `show running-config`); review retention for your needs.
+  (Unix only — on Windows files inherit the `%APPDATA%` ACLs, which are per-user
+  by default.)
 - **Known advisory:** [`RUSTSEC-2023-0071`](https://rustsec.org/advisories/RUSTSEC-2023-0071)
   (Marvin timing side-channel in the transitive `rsa` crate) has no upstream fix
   yet. Practical impact here is low — gukab is an SSH *client* and verifies RSA

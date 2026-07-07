@@ -3,7 +3,7 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [1.7.0] - 2026-07-07
 
 ### Added
 - **Windows support** (Windows 10 1809+ / Windows Terminal). SSH and serial (`COMx`)
@@ -11,8 +11,10 @@ This project follows [Semantic Versioning](https://semver.org).
   expect rules, logging, colorized output. Credentials use the Windows Credential
   Manager. Config/logs live in `%APPDATA%\gukab\`. In-session keyboard input is
   encoded from console key events to VT sequences, and ANSI output is enabled on the
-  console automatically. The Windows binary statically links the MSVC C runtime, so it
-  runs on a clean machine with no Visual C++ Redistributable install.
+  console automatically — including AltGr characters (`@` `$` `€` on e.g. Turkish and
+  German layouts). The Windows binary statically links the MSVC C runtime, so it runs
+  on a clean machine with no Visual C++ Redistributable install. Install with the new
+  PowerShell one-liner (see the README).
 
 ## [1.6.1] - 2026-07-02
 
@@ -160,6 +162,12 @@ This project follows [Semantic Versioning](https://semver.org).
 - Prebuilt binaries, a `curl | sh` installer, and a self-updater (`gukab-update`)
   via cargo-dist; published on tagged releases.
 
+[1.7.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.7.0
+[1.6.1]: https://github.com/GokhanTurk/gukab/releases/tag/v1.6.1
+[1.6.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.6.0
+[1.5.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.5.0
+[1.4.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.4.0
+[1.3.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.3.0
 [1.2.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.2.0
 [1.1.1]: https://github.com/GokhanTurk/gukab/releases/tag/v1.1.1
 [1.1.0]: https://github.com/GokhanTurk/gukab/releases/tag/v1.1.0

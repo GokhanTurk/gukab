@@ -2,8 +2,8 @@
 
 A terminal-only (TUI) SSH **and serial/console** connection manager for network
 devices. Built in Rust with `ratatui` + `russh` (pure-Rust SSH, no OpenSSL).
-Targets macOS (Apple Silicon + Intel), Arch Linux x86_64, and Windows 10/11
-(Windows Terminal).
+Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
+(Apple Silicon + Intel).
 
 ![gukab demo](docs/demo.gif)
 
@@ -55,9 +55,9 @@ it, and move the `gukab` binary somewhere on your `PATH`:
 | Platform | Archive |
 |----------|---------|
 | Linux x86_64 (Arch) | `gukab-x86_64-unknown-linux-gnu.tar.xz` |
+| Windows x86_64 | `gukab-x86_64-pc-windows-msvc.zip` |
 | Apple Silicon Mac | `gukab-aarch64-apple-darwin.tar.xz` |
 | Intel Mac | `gukab-x86_64-apple-darwin.tar.xz` |
-| Windows x86_64 | `gukab-x86_64-pc-windows-msvc.zip` |
 
 ### From source
 

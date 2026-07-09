@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -10,25 +10,35 @@ use chrono::Local;
 
 use crate::tui::app::{
     App, AppMode, CField, ConsoleForm, ExpectEdit, MacroEdit, MacroFocus, MacroScreen, MacroState,
-    EDIT_FIELD_COUNT, EDIT_FIELD_LABELS, PASSWORD_FIELD_IDX,
+    NoteInput, NotesScreen, EDIT_FIELD_COUNT, EDIT_FIELD_LABELS, PASSWORD_FIELD_IDX,
 };
 use crate::config::Macro;
 use crate::serial::{Flow, Parity};
 
 /// Width of the right-hand ASCII art panel.
 const ART_W: u16 = 36;
+/// Minimum terminal width for the right-hand panel to be shown at all.
+pub const PANEL_MIN_W: u16 = 90;
+/// Lines the banner (logo + clock + date + switch + version) occupies, plus one
+/// blank spacer so the notes header doesn't sit right under the version string.
+const BANNER_H: u16 = 18;
+/// Minimum lines for the notes section to be worth drawing (header + a couple
+/// of notes + the hint line).
+const NOTES_MIN_H: u16 = 5;
+/// Minimum terminal height for the notes section to fit under the banner.
+pub const NOTES_MIN_TERM_H: u16 = BANNER_H + NOTES_MIN_H;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
     // Show the art as a right-hand panel only when there's room for both it and a
     // usable host list — it must never overlap the list text.
-    let main_area = if area.width >= 90 && area.height >= 14 {
+    let main_area = if area.width >= PANEL_MIN_W && area.height >= 14 {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(50), Constraint::Length(ART_W)])
             .split(area);
-        draw_banner(f, app.anim_frame(), cols[1]);
+        draw_side_panel(f, app, cols[1]);
         cols[0]
     } else {
         area
@@ -63,6 +73,20 @@ pub fn draw(f: &mut Frame, app: &App) {
         AppMode::ConfirmDelete { ref name, .. } => draw_confirm_delete(f, name, area),
         AppMode::Macros(ref state) => draw_macros(f, state, area),
         AppMode::Console(ref form) => draw_console_form(f, form, area),
+        AppMode::Notes(ref screen) => match screen {
+            NotesScreen::List => {}
+            NotesScreen::Preview { title, content, scroll } => {
+                draw_note_preview(f, title, content, *scroll, area);
+            }
+            NotesScreen::Input { purpose, buffer, cursor } => {
+                draw_note_input(f, *purpose, buffer, *cursor, area);
+            }
+            NotesScreen::ConfirmDelete => {
+                if let Some(n) = app.notes.get(app.note_selected) {
+                    draw_confirm_delete_note(f, &n.title, area);
+                }
+            }
+        },
         AppMode::Normal => {}
     }
 }
@@ -206,7 +230,7 @@ fn draw_host_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = match &app.status {
         Some(msg) => msg.as_str(),
-        None => " ↑↓ nav  Enter connect  ^N add  ^E edit  ^D del  ^K cred  ^G macros  ^L console  Esc quit",
+        None => " ↑↓ nav  Enter connect  ^N add  ^E edit  ^D del  ^K cred  ^G macros  ^L console  ^O notes  Esc quit",
     };
     let widget = Paragraph::new(text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -585,8 +609,7 @@ fn draw_macro_edit(f: &mut Frame, edit: &MacroEdit, area: Rect) {
         } else {
             "?".to_string()
         };
-        let once = if e.once { " (once)" } else { "" };
-        let text = format!("  • {}  →  {}{}", e.pattern, action, once);
+        let text = format!("  • {}  →  {}", e.pattern, action);
         let sel = edit.focus == MacroFocus::Expect(i);
         items.push(ListItem::new(Line::from(if sel {
             Span::raw(text)
@@ -626,7 +649,7 @@ fn draw_macro_edit(f: &mut Frame, edit: &MacroEdit, area: Rect) {
 
 fn draw_expect_edit(f: &mut Frame, sub: &ExpectEdit, area: Rect) {
     let popup_width = area.width.min(60);
-    let popup_height = 4 * 3 + 4;
+    let popup_height = 3 * 3 + 4;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -650,7 +673,6 @@ fn draw_expect_edit(f: &mut Frame, sub: &ExpectEdit, area: Rect) {
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Length(3),
             Constraint::Min(1),
         ])
         .split(inner);
@@ -658,21 +680,13 @@ fn draw_expect_edit(f: &mut Frame, sub: &ExpectEdit, area: Rect) {
     draw_field(f, rows[0], "Pattern (regex)", sub.field(0), sub.focus == 0);
     draw_field(f, rows[1], "Send (literal)", sub.field(1), sub.focus == 1);
     draw_field(f, rows[2], "Credential ref", sub.field(2), sub.focus == 2);
-    let once_text = if sub.once {
-        "[x] fire once per session"
-    } else {
-        "[ ] fire on every match"
-    };
-    draw_field(f, rows[3], "Once (Space toggles)", once_text, sub.focus == 3);
 
-    if sub.focus < 3 {
-        cursor_in_field(f, rows[sub.focus], sub.cursor);
-    }
+    cursor_in_field(f, rows[sub.focus.min(2)], sub.cursor);
 
-    let hint = Paragraph::new("Tab: field  Space: toggle  Ctrl+S/Enter: save  Esc: cancel")
+    let hint = Paragraph::new("Tab: field  Ctrl+S/Enter: save  Esc: cancel")
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::DarkGray));
-    f.render_widget(hint, rows[4]);
+    f.render_widget(hint, rows[3]);
 }
 
 /// Confirm popup for deleting a macro (mirrors `draw_confirm_delete` for hosts).
@@ -799,6 +813,191 @@ fn draw_console_form(f: &mut Frame, form: &ConsoleForm, area: Rect) {
     if let Some(r) = focus_rect {
         cursor_in_field(f, r, form.cursor);
     }
+}
+
+// ───────────────────────── Notes panel ─────────────────────────
+
+/// The right-hand column: the banner on top and, if enabled and there's room,
+/// the notes section beneath it.
+fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) {
+    if app.settings.notes.hidden || area.height < NOTES_MIN_TERM_H {
+        draw_banner(f, app.anim_frame(), area);
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(BANNER_H), Constraint::Min(0)])
+        .split(area);
+    draw_banner(f, app.anim_frame(), rows[0]);
+    draw_notes_panel(f, app, rows[1]);
+}
+
+/// The notes section: a top border titled with the configurable label, the note
+/// list (selection highlighted while the panel has focus), and its own shortcut
+/// hints pinned to the bottom.
+fn draw_notes_panel(f: &mut Frame, app: &App, area: Rect) {
+    let focused = matches!(app.mode, AppMode::Notes(_));
+    let border_style = if focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(format!(" {} ", app.settings.notes.label))
+        .title_alignment(Alignment::Center)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Hints live under the list: two lines when focused, one teaser otherwise.
+    let hint_h = if focused { 2u16 } else { 1u16 }.min(inner.height);
+    let list_h = inner.height - hint_h;
+    let list_area = Rect::new(inner.x, inner.y, inner.width, list_h);
+    let hint_area = Rect::new(inner.x, inner.y + list_h, inner.width, hint_h);
+
+    let dim = Style::default().fg(Color::DarkGray);
+    if app.notes.is_empty() {
+        let msg = if focused { "No notes yet — a adds one" } else { "No notes yet" };
+        f.render_widget(Paragraph::new(msg).style(dim).alignment(Alignment::Center), list_area);
+    } else {
+        let items: Vec<ListItem> = app
+            .notes
+            .iter()
+            .map(|n| {
+                ListItem::new(Line::styled(
+                    n.title.clone(),
+                    Style::default().fg(Color::Gray),
+                ))
+            })
+            .collect();
+        let list = List::new(items)
+            .highlight_style(selection_highlight())
+            .highlight_symbol(HL_SYMBOL);
+        let mut state = ListState::default();
+        if focused {
+            state.select(Some(app.note_selected));
+        }
+        f.render_stateful_widget(list, list_area, &mut state);
+    }
+
+    let hints: Vec<Line> = if focused {
+        vec![
+            Line::raw("Enter view  a add  e edit  r rename"),
+            Line::raw("d del  l label  h hide  Esc back"),
+        ]
+    } else {
+        vec![Line::raw("^O notes")]
+    };
+    f.render_widget(
+        Paragraph::new(hints).style(dim).alignment(Alignment::Center),
+        hint_area,
+    );
+}
+
+/// Quick preview: the full note text in a centered scrollable popup.
+fn draw_note_preview(f: &mut Frame, title: &str, content: &str, scroll: u16, area: Rect) {
+    let popup_width = area.width.saturating_sub(4).clamp(20, 72);
+    let popup_height = area.height.saturating_sub(4).clamp(6, 20);
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} "))
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(content.to_string())
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        rows[0],
+    );
+    f.render_widget(
+        Paragraph::new("↑↓/PgUp/PgDn scroll  Esc close")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center),
+        rows[1],
+    );
+}
+
+/// Single-line prompt popup: new note title, rename, or the section label.
+fn draw_note_input(f: &mut Frame, purpose: NoteInput, buffer: &str, cursor: usize, area: Rect) {
+    let popup_width = area.width.min(50);
+    let popup_height = 6u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let (title, label) = match purpose {
+        NoteInput::Add => (" New Note ", "Title"),
+        NoteInput::Rename => (" Rename Note ", "New title"),
+        NoteInput::Label => (" Section Label ", "Label (folder stays 'notes')"),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(inner);
+    draw_field(f, rows[0], label, buffer, true);
+    cursor_in_field(f, rows[0], cursor);
+    f.render_widget(
+        Paragraph::new("Enter: save  Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center),
+        rows[1],
+    );
+}
+
+/// Confirm popup for deleting a note (mirrors the host/macro delete prompts).
+fn draw_confirm_delete_note(f: &mut Frame, title: &str, area: Rect) {
+    let popup_width = area.width.min(54);
+    let popup_height = 5u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete note ")
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Delete note \"{title}\"?"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "y/Enter: delete    n/Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        inner,
+    );
 }
 
 // ───────────────────────── ASCII art side panel ─────────────────────────
@@ -933,6 +1132,56 @@ mod render_tests {
     use super::*;
     use crate::tui::app::MacroEdit;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn notes_panel_renders_label_and_titles_and_hides() {
+        use crate::config::Settings;
+        use crate::notes::NoteMeta;
+
+        let mut app = crate::tui::app::App::new(
+            Vec::new(),
+            Vec::new(),
+            crate::config::Automations::default(),
+            Settings::default(),
+        );
+        app.settings.notes.label = "Notlar".into();
+        app.notes = vec![
+            NoteMeta {
+                title: "switch şifreleri".into(),
+                path: "a.md".into(),
+                modified: std::time::SystemTime::UNIX_EPOCH,
+            },
+            NoteMeta {
+                title: "vlan planı".into(),
+                path: "b.md".into(),
+                modified: std::time::SystemTime::UNIX_EPOCH,
+            },
+        ];
+
+        let backend = TestBackend::new(120, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        let render = |term: &mut Terminal<TestBackend>, app: &crate::tui::app::App| -> String {
+            term.draw(|f| draw(f, app)).unwrap();
+            term.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        let text = render(&mut term, &app);
+        assert!(text.contains("Notlar"), "custom label should show");
+        assert!(text.contains("switch şifreleri"), "note titles should show");
+        assert!(text.contains("vlan planı"));
+        assert!(text.contains("^O notes"), "unfocused hint should show");
+
+        // Hidden: the section (and its notes) disappears, the banner stays.
+        app.settings.notes.hidden = true;
+        let text = render(&mut term, &app);
+        assert!(!text.contains("Notlar"));
+        assert!(!text.contains("switch şifreleri"));
+    }
 
     #[test]
     fn many_line_macro_renders_focused_row_visible() {

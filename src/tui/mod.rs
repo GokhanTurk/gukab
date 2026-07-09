@@ -26,8 +26,9 @@ pub async fn run(
     groups: Vec<Group>,
     automations: Automations,
 ) -> Result<(), TuiError> {
+    let settings = crate::config::load_settings().unwrap_or_default();
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, hosts, groups, automations).await;
+    let result = event_loop(&mut terminal, hosts, groups, automations, settings).await;
     ratatui::restore();
 
     // `automations` may have been edited in the macro manager this session, so use
@@ -47,8 +48,9 @@ async fn event_loop(
     hosts: Vec<Host>,
     groups: Vec<Group>,
     automations: Automations,
+    settings: crate::config::Settings,
 ) -> Result<(Option<Host>, Option<SerialParams>, Automations), TuiError> {
-    let mut app = App::new(hosts, groups, automations);
+    let mut app = App::new(hosts, groups, automations, settings);
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
@@ -61,6 +63,18 @@ async fn event_loop(
             && key.kind != KeyEventKind::Release
         {
             app.update(key);
+        }
+
+        // A note wants editing: release the terminal, run the user's editor
+        // (blocking), then re-enter the TUI and re-read the notes folder.
+        if let Some(path) = app.pending_note_edit.take() {
+            ratatui::restore();
+            let result = crate::notes::open_in_editor(&path);
+            *terminal = ratatui::init();
+            if let Err(e) = result {
+                app.set_status(format!("Editor failed: {e}"));
+            }
+            app.reload_notes();
         }
 
         if app.should_quit || app.pending_connect.is_some() || app.pending_serial.is_some() {

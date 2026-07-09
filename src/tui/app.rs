@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::{Automations, Expect, Group, Host, Macro};
+use crate::config::{Automations, Expect, Group, Host, Macro, Settings};
+use crate::notes::NoteMeta;
 use crate::serial::{Flow, Parity, SerialParams, BAUD_PRESETS};
 
 pub const EDIT_FIELD_COUNT: usize = 9;
@@ -126,6 +127,36 @@ pub enum AppMode {
     Macros(MacroState),
     /// The console (serial) connection form (Ctrl+L or the list's action row).
     Console(ConsoleForm),
+    /// The notes panel has focus (Ctrl+O); the inner screen is the current popup.
+    Notes(NotesScreen),
+}
+
+/// Sub-screen of the notes panel. `List` is the plain focused panel; the rest
+/// are popups over it.
+pub enum NotesScreen {
+    List,
+    /// Full note text in a centered scrollable popup.
+    Preview {
+        title: String,
+        content: String,
+        scroll: u16,
+    },
+    /// Single-line text prompt (new note title / rename / section label).
+    Input {
+        purpose: NoteInput,
+        buffer: String,
+        cursor: usize,
+    },
+    /// Confirmation before deleting the selected note.
+    ConfirmDelete,
+}
+
+/// What the notes text prompt is collecting.
+#[derive(Clone, Copy, PartialEq)]
+pub enum NoteInput {
+    Add,
+    Rename,
+    Label,
 }
 
 /// Which field of the console form has focus.
@@ -360,8 +391,7 @@ pub struct ExpectEdit {
     pub pattern: String,
     pub send: String,
     pub send_credential: String,
-    pub once: bool,
-    /// 0 = pattern, 1 = send, 2 = credential, 3 = once.
+    /// 0 = pattern, 1 = send, 2 = credential.
     pub focus: usize,
     pub cursor: usize,
 }
@@ -435,7 +465,6 @@ impl ExpectEdit {
             pattern: String::new(),
             send: String::new(),
             send_credential: String::new(),
-            once: true,
             focus: 0,
             cursor: 0,
         }
@@ -447,7 +476,6 @@ impl ExpectEdit {
             pattern: e.pattern.clone(),
             send: e.send.clone().unwrap_or_default(),
             send_credential: e.send_credential.clone().unwrap_or_default(),
-            once: e.once,
             focus: 0,
             cursor: e.pattern.chars().count(),
         }
@@ -513,7 +541,6 @@ fn build_expect(edit: &ExpectEdit) -> Result<Expect, String> {
         pattern: edit.pattern.clone(),
         send: has_send.then(|| edit.send.clone()),
         send_credential: has_cred.then(|| edit.send_credential.clone()),
-        once: edit.once,
     })
 }
 
@@ -552,12 +579,26 @@ pub struct App {
     pub status: Option<String>,
     /// Caret position (char index) within the search query.
     pub filter_cursor: usize,
+    /// App preferences (notes label / visibility), persisted to `settings.toml`.
+    pub settings: Settings,
+    /// Notes shown in the panel, most recently modified first.
+    pub notes: Vec<NoteMeta>,
+    /// Selected note (index into `notes`); highlighted while notes have focus.
+    pub note_selected: usize,
+    /// Set to open this note in the external editor; the event loop suspends the
+    /// TUI, runs the editor, and clears it.
+    pub pending_note_edit: Option<std::path::PathBuf>,
     /// When the app started — drives the wall-clock-based banner animation.
     started: std::time::Instant,
 }
 
 impl App {
-    pub fn new(hosts: Vec<Host>, groups: Vec<Group>, automations: Automations) -> Self {
+    pub fn new(
+        hosts: Vec<Host>,
+        groups: Vec<Group>,
+        automations: Automations,
+        settings: Settings,
+    ) -> Self {
         let mut app = Self {
             hosts,
             groups,
@@ -572,10 +613,21 @@ impl App {
             pending_serial: None,
             status: None,
             filter_cursor: 0,
+            settings,
+            notes: crate::notes::list_notes(),
+            note_selected: 0,
+            pending_note_edit: None,
             started: std::time::Instant::now(),
         };
         app.apply_filter();
         app
+    }
+
+    /// Re-read the notes folder (after an edit, or on entering the notes panel so
+    /// files added outside gukab show up) and keep the selection in range.
+    pub fn reload_notes(&mut self) {
+        self.notes = crate::notes::list_notes();
+        self.note_selected = self.note_selected.min(self.notes.len().saturating_sub(1));
     }
 
     /// Current animation frame (~8 fps), derived from elapsed wall-clock time so
@@ -797,6 +849,7 @@ impl App {
             AppMode::ConfirmDelete { .. } => self.update_confirm_delete(key),
             AppMode::Macros(_) => self.update_macros(key),
             AppMode::Console(_) => self.update_console(key),
+            AppMode::Notes(_) => self.update_notes(key),
         }
     }
 
@@ -869,6 +922,11 @@ impl App {
             // Ctrl+L opens the console (serial) connection form.
             KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
                 self.mode = AppMode::Console(ConsoleForm::new());
+            }
+
+            // Ctrl+O focuses the notes panel (un-hiding it if hidden).
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+                self.open_notes();
             }
 
             KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
@@ -952,6 +1010,200 @@ impl App {
             self.set_status(format!("Deleted host {name}"));
         }
         self.apply_filter();
+    }
+
+    /// Focus the notes panel (Ctrl+O), un-hiding it first if needed. On a terminal
+    /// too small to show the right panel, explain instead of focusing an invisible
+    /// pane.
+    fn open_notes(&mut self) {
+        let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
+        if w < crate::tui::ui::PANEL_MIN_W || h < crate::tui::ui::NOTES_MIN_TERM_H {
+            self.set_status(format!(
+                "Terminal too small for the notes panel (needs ≥ {}×{})",
+                crate::tui::ui::PANEL_MIN_W,
+                crate::tui::ui::NOTES_MIN_TERM_H
+            ));
+            return;
+        }
+        if self.settings.notes.hidden {
+            self.settings.notes.hidden = false;
+            if let Err(e) = crate::config::save_settings(&self.settings) {
+                self.set_status(format!("Could not save settings: {e}"));
+            }
+        }
+        self.reload_notes();
+        self.mode = AppMode::Notes(NotesScreen::List);
+    }
+
+    fn update_notes(&mut self, key: KeyEvent) {
+        self.status = None;
+        let AppMode::Notes(screen) = &mut self.mode else {
+            return;
+        };
+        // Deferred effects: `screen` mutably borrows `self.mode`, so mode changes,
+        // status messages, and reloads are applied after the match (same pattern
+        // as the macro manager).
+        let mut next_screen: Option<NotesScreen> = None;
+        let mut leave = false;
+        let mut status_msg: Option<String> = None;
+        let mut reload = false;
+        let mut select_top = false;
+
+        match screen {
+            NotesScreen::List => match key.code {
+                KeyCode::Esc => leave = true,
+                KeyCode::Up => self.note_selected = self.note_selected.saturating_sub(1),
+                KeyCode::Down if !self.notes.is_empty() => {
+                    self.note_selected = (self.note_selected + 1).min(self.notes.len() - 1);
+                }
+                KeyCode::Enter => {
+                    if let Some(n) = self.notes.get(self.note_selected) {
+                        match crate::notes::read_note(&n.path) {
+                            Ok(content) => {
+                                next_screen = Some(NotesScreen::Preview {
+                                    title: n.title.clone(),
+                                    content,
+                                    scroll: 0,
+                                });
+                            }
+                            Err(e) => status_msg = Some(format!("Could not read note: {e}")),
+                        }
+                    }
+                }
+                KeyCode::Char('a') => {
+                    next_screen = Some(NotesScreen::Input {
+                        purpose: NoteInput::Add,
+                        buffer: String::new(),
+                        cursor: 0,
+                    });
+                }
+                KeyCode::Char('e') => {
+                    if let Some(n) = self.notes.get(self.note_selected) {
+                        self.pending_note_edit = Some(n.path.clone());
+                    }
+                }
+                KeyCode::Char('r') => {
+                    if let Some(n) = self.notes.get(self.note_selected) {
+                        let buffer = n.title.clone();
+                        let cursor = buffer.chars().count();
+                        next_screen = Some(NotesScreen::Input {
+                            purpose: NoteInput::Rename,
+                            buffer,
+                            cursor,
+                        });
+                    }
+                }
+                KeyCode::Char('l') => {
+                    let buffer = self.settings.notes.label.clone();
+                    let cursor = buffer.chars().count();
+                    next_screen = Some(NotesScreen::Input {
+                        purpose: NoteInput::Label,
+                        buffer,
+                        cursor,
+                    });
+                }
+                KeyCode::Char('d') if !self.notes.is_empty() => {
+                    next_screen = Some(NotesScreen::ConfirmDelete);
+                }
+                KeyCode::Char('h') => {
+                    self.settings.notes.hidden = true;
+                    if let Err(e) = crate::config::save_settings(&self.settings) {
+                        status_msg = Some(format!("Could not save settings: {e}"));
+                    }
+                    leave = true;
+                }
+                _ => {}
+            },
+
+            NotesScreen::Preview { content, scroll, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                    next_screen = Some(NotesScreen::List);
+                }
+                KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::Down | KeyCode::PageDown => {
+                    let step = if key.code == KeyCode::Down { 1 } else { 10 };
+                    let max = content.lines().count() as u16;
+                    *scroll = scroll.saturating_add(step).min(max.saturating_sub(1));
+                }
+                _ => {}
+            },
+
+            NotesScreen::Input { purpose, buffer, cursor } => match key.code {
+                KeyCode::Esc => next_screen = Some(NotesScreen::List),
+                KeyCode::Enter => match purpose {
+                    NoteInput::Add => match crate::notes::create_note(buffer) {
+                        Ok(path) => {
+                            // Open the fresh note in the editor right away.
+                            self.pending_note_edit = Some(path);
+                            reload = true;
+                            select_top = true;
+                            next_screen = Some(NotesScreen::List);
+                        }
+                        Err(e) => status_msg = Some(e.to_string()),
+                    },
+                    NoteInput::Rename => {
+                        if let Some(n) = self.notes.get(self.note_selected) {
+                            match crate::notes::rename_note(&n.path, buffer) {
+                                Ok(_) => {
+                                    reload = true;
+                                    next_screen = Some(NotesScreen::List);
+                                }
+                                Err(e) => status_msg = Some(e.to_string()),
+                            }
+                        }
+                    }
+                    NoteInput::Label => {
+                        let label = buffer.trim();
+                        if label.is_empty() {
+                            status_msg = Some("Label cannot be empty".into());
+                        } else {
+                            self.settings.notes.label = label.to_string();
+                            if let Err(e) = crate::config::save_settings(&self.settings) {
+                                status_msg = Some(format!("Could not save settings: {e}"));
+                            }
+                            next_screen = Some(NotesScreen::List);
+                        }
+                    }
+                },
+                _ => {
+                    apply_edit_key(buffer, cursor, key);
+                }
+            },
+
+            NotesScreen::ConfirmDelete => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    if let Some(n) = self.notes.get(self.note_selected) {
+                        if let Err(e) = crate::notes::delete_note(&n.path) {
+                            status_msg = Some(format!("Could not delete note: {e}"));
+                        } else {
+                            reload = true;
+                        }
+                    }
+                    next_screen = Some(NotesScreen::List);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    next_screen = Some(NotesScreen::List);
+                }
+                _ => {}
+            },
+        }
+
+        if reload {
+            self.reload_notes();
+        }
+        if select_top {
+            self.note_selected = 0;
+        }
+        if let Some(s) = next_screen {
+            self.mode = AppMode::Notes(s);
+        }
+        if leave {
+            self.mode = AppMode::Normal;
+        }
+        if let Some(m) = status_msg {
+            self.status = Some(m);
+        }
     }
 
     /// Move the selected host one slot up/down within its own group (and persist).
@@ -1308,14 +1560,13 @@ impl App {
                         match key.code {
                             KeyCode::Esc => edit.sub = None,
                             KeyCode::Tab => {
-                                sub.focus = (sub.focus + 1) % 4;
+                                sub.focus = (sub.focus + 1) % 3;
                                 sub.cursor = sub.field_len();
                             }
                             KeyCode::BackTab => {
-                                sub.focus = (sub.focus + 3) % 4;
+                                sub.focus = (sub.focus + 2) % 3;
                                 sub.cursor = sub.field_len();
                             }
-                            KeyCode::Char(' ') if sub.focus == 3 => sub.once = !sub.once,
                             KeyCode::Enter | KeyCode::Char('s') if key.code == KeyCode::Enter || ctrl => {
                                 match build_expect(sub) {
                                     Ok(exp) => {
@@ -1592,7 +1843,6 @@ mod macro_tests {
                 pattern: "[Pp]assword:".into(),
                 send: None,
                 send_credential: Some("en1".into()),
-                once: false,
             }],
         );
         let m = build_macro(&edit, &[]).expect("valid macro");
@@ -1609,7 +1859,24 @@ mod macro_tests {
         assert_eq!(bm.expects.len(), 1);
         assert_eq!(bm.expects[0].send_credential.as_deref(), Some("en1"));
         assert_eq!(bm.expects[0].send, None);
-        assert!(!bm.expects[0].once);
+    }
+
+    #[test]
+    fn legacy_automations_with_once_field_still_parse() {
+        // `once` was removed (expects are now always one-shot per arming); files
+        // written by older versions still carry it and must keep loading.
+        let legacy = r#"
+            [[macros]]
+            key = "en"
+            send = "enable"
+
+            [[macros.expects]]
+            pattern = "[Pp]assword:"
+            send_credential = "enable1"
+            once = false
+        "#;
+        let autos: Automations = toml::from_str(legacy).expect("legacy file parses");
+        assert_eq!(autos.macros[0].expects[0].send_credential.as_deref(), Some("enable1"));
     }
 
     #[test]

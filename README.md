@@ -17,10 +17,15 @@ Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
   (auto-detected ports) and baud, with an Advanced section for data/parity/stop/flow;
   change baud live from the `Ctrl+A` menu. Nothing is saved.
 - **Session automation** — keyboard macros (`Ctrl+A` fuzzy picker) and regex `expect`
-  rules that auto-answer prompts (e.g. enable passwords). Add/edit macros in-app with
-  the **macro manager** (`Ctrl+G`).
+  rules that auto-answer prompts (e.g. enable passwords). Each rule fires at most once
+  per macro run — a wrong password is never retried into an account lockout. Add/edit
+  macros in-app with the **macro manager** (`Ctrl+G`).
 - **Credentials in the OS keychain** — never written to config files.
 - **Session logging** — every session transcript saved per host/device.
+- **Notes panel** — quick notes under the switch art (`Ctrl+O`): add, preview, rename,
+  delete; edited in your own editor (`$EDITOR`/nano/vim on Linux and macOS, Notepad on
+  Windows). Plain `.md` files in `~/.config/gukab/notes/`, so they're yours to grep and
+  sync. The section label is configurable and the panel can be hidden.
 
 ## Install
 

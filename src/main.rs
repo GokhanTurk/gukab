@@ -2,6 +2,7 @@ mod config;
 mod fuzzy;
 #[cfg(target_os = "macos")]
 mod macos_trust;
+mod notes;
 mod serial;
 mod session;
 mod ssh;
@@ -23,8 +24,8 @@ HOST LIST KEYS:
     Ctrl/Shift+↑↓    Move host in group  Ctrl+N  Add host
     Ctrl+E           Edit host           Ctrl+D  Delete host
     Ctrl+K           Add credential      Ctrl+G  Manage macros
-    Ctrl+L           Console (serial)    Esc     Quit
-    (type)           Fuzzy-filter the list
+    Ctrl+L           Console (serial)    Ctrl+O  Notes panel
+    Esc              Quit                (type)  Fuzzy-filter the list
 
 IN A SESSION:
     Ctrl+A           Macro picker        Ctrl+A Ctrl+A   Send a literal Ctrl+A
@@ -33,8 +34,10 @@ IN A SESSION:
 CONFIG (~/.config/gukab/):
     hosts.toml        Hosts and groups
     automations.toml  Reusable macros and expect rules
+    settings.toml     App preferences (notes label / visibility)
     known_hosts       Trusted SSH host-key fingerprints
     log/<host>/       Per-session transcripts
+    notes/            Panel notes (one .md file per note)
 
 Docs: https://github.com/GokhanTurk/gukab";
 

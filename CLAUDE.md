@@ -136,6 +136,7 @@ does trust-on-first-use — it records each server's SHA-256 fingerprint in
   `automations.toml`, including each macro's nested expect rules (see Session Automation)
 - `Ctrl+L` (or the always-present **＋ Console connection…** row at the top of the list):
   open the **console (serial) connection** form (see Serial / Console Connection)
+- `Ctrl+O`: focus the **notes panel** on the right (un-hiding it if hidden — see Notes Panel)
 
 The host list renders the name column at a fixed width (longest visible name, clamped to
 12–26 cols, truncated with `…`) so the `user@host:port` column stays aligned regardless of
@@ -164,6 +165,36 @@ group = "Core"
 # ...
 ```
 
+## Notes Panel
+
+The right-hand panel (GUKAB logo + clock + animated switch, [src/tui/ui.rs](src/tui/ui.rs)
+`draw_banner`) has a **notes section** beneath the banner (`draw_side_panel` /
+`draw_notes_panel`; drawn only when the panel fits — terminal ≥ 90 cols and enough rows
+under the 17-line banner). Each note is a plain **`.md` file** in
+`~/.config/gukab/notes/` (`config::notes_dir()`; `%APPDATA%\gukab\notes\` on Windows) —
+the title is the file name (stem, unicode preserved; forbidden path characters sanitized
+by [src/notes/mod.rs](src/notes/mod.rs) `sanitize_title`), so notes can also be created
+and edited outside gukab. Directory 0700, files 0600 on Unix. The list is sorted most
+recently modified first and re-read on every `Ctrl+O` (so external edits show up).
+
+The section header label is configurable (default **Notes**) and lives in
+`~/.config/gukab/settings.toml` (`config::{Settings, load_settings, save_settings}`,
+`[notes] label / hidden`) — the on-disk folder is always `notes` regardless of the label.
+Unknown settings fields are ignored for forward compatibility.
+
+`Ctrl+O` focuses the panel (`AppMode::Notes(NotesScreen)`, [src/tui/app.rs](src/tui/app.rs)
+`update_notes` — same accumulator pattern as the macro manager). Keys while focused
+(shown as hints **under the notes section**, not in the status bar): `↑↓` select, `Enter`
+quick preview (centered scrollable popup), `a` add (title prompt → file created → opens in
+the editor), `e` edit, `r` rename (renames the file), `d` delete (confirmed), `l` change
+the section label, `h` hide the section (persisted; `Ctrl+O` un-hides), `Esc` back.
+
+**Editing uses an external editor**: on Linux/macOS `$VISUAL` → `$EDITOR` → first of
+nano/vim/vi on `PATH`; on Windows always Notepad (guaranteed present). The event loop
+([src/tui/mod.rs](src/tui/mod.rs)) sees `App.pending_note_edit`, releases the terminal
+(`ratatui::restore`), runs the editor blocking, re-inits the TUI and reloads the notes.
+(Windows 11's tabbed Notepad may detach immediately; the reload-on-focus covers that.)
+
 ## Session Automation
 
 Inside an active SSH session ([src/ssh/client.rs](src/ssh/client.rs) `io_loop`), two
@@ -178,12 +209,17 @@ mechanisms run on top of the raw PTY passthrough:
   sent as its own command terminated by `\r` (Enter / `^M`).
 - **Expect rules** — output is scanned against each rule's `pattern` (regex). On match, gukab
   auto-sends `send` (literal) or the keyring password named by `send_credential`, plus a
-  newline. `once = true` fires only once per session. Credentials are read from the keyring at
+  newline. **Every rule is one-shot per arming**: it fires at most once, then stays disarmed
+  until the macro that owns it runs again (each run — `on_connect` or manual `Ctrl+A` —
+  re-arms it for exactly one more firing, replacing any earlier copies). So a wrong
+  auto-sent password is never retried into an account lockout, and a rule that already fired
+  never answers an unrelated later prompt (e.g. the `Password:` asked while creating a user).
+  A legacy `once` field in config files is ignored. Credentials are read from the keyring at
   send time, never stored in config. **Expects belong to a macro** (or to a host) — there are
   no global always-on expects.
 - **On-connect macros** — a host's `on_connect` field lists macro keys to auto-run right after
   connecting, e.g. `on_connect = ["en"]`. Running a macro on connect also **arms that macro's
-  expects** for the session. So the "en" macro owns the `[Pp]assword:` → enable-secret rule,
+  expects** (one firing each). So the "en" macro owns the `[Pp]assword:` → enable-secret rule,
   and it only applies to hosts that actually run "en"; a plain in-band-login switch (no
   `on_connect`) gets no expects and its login prompt is never auto-answered. Unknown keys
   print a notice and are skipped.
@@ -191,8 +227,9 @@ mechanisms run on top of the raw PTY passthrough:
 Scoping summary:
 - **Macros** (global in `automations.toml`, or per-host) are always available for manual
   `Ctrl+A` use; they never auto-fire.
-- **A macro's `expects` arm only when that macro runs via a host's `on_connect`.**
-- A host's own `[[hosts.expects]]` always apply.
+- **A macro's `expects` arm each time that macro runs** (via `on_connect` or `Ctrl+A`), for
+  at most one firing per rule per run.
+- A host's own `[[hosts.expects]]` are armed at connect (also one firing each).
 
 `automations.toml` (expects nested under the macro that owns them):
 ```toml
@@ -203,7 +240,6 @@ send = "enable"
   [[macros.expects]]
   pattern = "[Pp]assword:"
   send_credential = "enable1"   # or: send = "literal"
-  once = false
 
 # Multi-line macro — each non-empty line is sent as a separate Enter-terminated command.
 [[macros]]

@@ -182,7 +182,7 @@ pub async fn connect_serial(
     // No host here, so only the global macros apply; a macro's expects are armed
     // when it is run from the Ctrl+A picker (as in an SSH session).
     let macros = automations.macros.clone();
-    let mut compiled = session::build_automations(&[])?;
+    let mut compiled = session::build_automations(&[], None)?;
 
     let log_tx = crate::ssh::session_log::start(params.log_label());
 

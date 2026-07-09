@@ -49,7 +49,10 @@ pub struct Macro {
 
 /// An expect rule: when `pattern` (a regex) matches the incoming output, gukab
 /// auto-sends either `send` (literal) or the keyring password named by
-/// `send_credential`, followed by a newline.
+/// `send_credential`, followed by a newline. A rule fires at most once per
+/// arming — armed at connect (host expects / `on_connect` macros) or each time
+/// its owning macro is run — so a wrong credential is never retried into a
+/// lockout and a stale rule never answers an unrelated later prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Expect {
     pub pattern: String,
@@ -57,8 +60,6 @@ pub struct Expect {
     pub send: Option<String>,
     #[serde(default)]
     pub send_credential: Option<String>,
-    #[serde(default = "default_true")]
-    pub once: bool,
 }
 
 impl Default for Host {
@@ -96,6 +97,38 @@ pub struct Automations {
     pub macros: Vec<Macro>,
 }
 
+/// App preferences persisted in `settings.toml` (owner-only, like the other
+/// config files). Unknown fields are ignored so future settings stay compatible.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub notes: NotesSettings,
+}
+
+/// Preferences for the notes section of the right-hand panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotesSettings {
+    /// Display label of the section header (the on-disk folder stays `notes`).
+    #[serde(default = "default_notes_label")]
+    pub label: String,
+    /// Hide the section entirely; `Ctrl+O` un-hides it.
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+impl Default for NotesSettings {
+    fn default() -> Self {
+        Self {
+            label: default_notes_label(),
+            hidden: false,
+        }
+    }
+}
+
+fn default_notes_label() -> String {
+    "Notes".to_string()
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 struct HostsFile {
     #[serde(default)]
@@ -116,10 +149,6 @@ pub enum ConfigError {
 
 fn default_port() -> u16 {
     22
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// The user's home directory: `$HOME` on Unix, `%USERPROFILE%` (falling back to
@@ -198,6 +227,16 @@ pub fn log_dir() -> PathBuf {
     config_dir().join("log")
 }
 
+/// Directory holding the panel notes (one `.md` file per note). The folder name
+/// is always `notes`, regardless of the section's configurable display label.
+pub fn notes_dir() -> PathBuf {
+    config_dir().join("notes")
+}
+
+pub fn settings_path() -> PathBuf {
+    config_dir().join("settings.toml")
+}
+
 /// File recording each server's SSH host-key fingerprint (trust-on-first-use).
 pub fn known_hosts_path() -> PathBuf {
     config_dir().join("known_hosts")
@@ -221,6 +260,30 @@ pub fn save_automations(automations: &Automations) -> Result<(), ConfigError> {
         std::fs::create_dir_all(parent)?;
     }
     let content = toml::to_string(automations)?;
+    std::fs::write(&path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+pub fn load_settings() -> Result<Settings, ConfigError> {
+    let path = settings_path();
+    if !path.exists() {
+        return Ok(Settings::default());
+    }
+    let content = std::fs::read_to_string(path)?;
+    Ok(toml::from_str(&content)?)
+}
+
+pub fn save_settings(settings: &Settings) -> Result<(), ConfigError> {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string(settings)?;
     std::fs::write(&path, content)?;
     #[cfg(unix)]
     {
@@ -257,6 +320,30 @@ pub fn save_hosts(hosts: &[Host], groups: &[Group]) -> Result<(), ConfigError> {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::Settings;
+
+    #[test]
+    fn settings_default_and_roundtrip() {
+        let d = Settings::default();
+        assert_eq!(d.notes.label, "Notes");
+        assert!(!d.notes.hidden);
+
+        // An empty file yields the defaults; a custom label + hidden round-trips.
+        let empty: Settings = toml::from_str("").expect("empty settings parse");
+        assert_eq!(empty.notes.label, "Notes");
+
+        let mut s = Settings::default();
+        s.notes.label = "Notlar".into();
+        s.notes.hidden = true;
+        let text = toml::to_string(&s).expect("serialize");
+        let back: Settings = toml::from_str(&text).expect("parse");
+        assert_eq!(back.notes.label, "Notlar");
+        assert!(back.notes.hidden);
+    }
 }
 
 // Unix-only: asserts against `/home/...` paths and drives `HOME` (on Windows the

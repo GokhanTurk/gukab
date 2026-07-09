@@ -3,6 +3,32 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **Notes panel.** A notes section under the switch art in the right-hand panel.
+  `Ctrl+O` focuses it; then `a` add, `Enter` quick preview (scrollable), `e` edit,
+  `r` rename, `d` delete (confirmed), `l` change the section label, `h` hide the
+  section (both persisted in the new `settings.toml`), `Esc` back — the shortcut
+  hints sit right under the section. Notes are plain `.md` files in
+  `~/.config/gukab/notes/` (`%APPDATA%\gukab\notes\` on Windows), one file per note
+  with the title as the file name, sorted most recently modified first — create or
+  edit them outside gukab and they show up too. Editing opens your own editor:
+  `$VISUAL`/`$EDITOR` (falling back to nano/vim/vi) on Linux and macOS, Notepad on
+  Windows.
+
+### Changed
+- **Expect rules now fire at most once per arming** (lockout protection). Previously a
+  rule with `once = false` stayed armed for the whole session: a wrong auto-sent
+  password was re-tried on every re-prompt until the device blocked the account, and
+  a long-armed rule could answer an unrelated later prompt (e.g. the `Password:`
+  asked while creating a user on the switch). Now every rule fires once and disarms;
+  running its macro again (`on_connect` at connect, or manually via `Ctrl+A`) re-arms
+  it for exactly one more firing, replacing any earlier copies so rules never stack.
+  The `once` config field and its checkbox in the macro manager are gone; old
+  `automations.toml`/`hosts.toml` files that still contain `once = …` load fine (the
+  field is ignored).
+
 ## [1.7.0] - 2026-07-07
 
 ### Added

@@ -53,21 +53,32 @@ enum Response {
     Credential(String),
 }
 
-/// A compiled expect rule with its armed state.
+/// A compiled expect rule with its armed state. Every rule is one-shot per
+/// arming: it fires at most once, then stays disarmed until the macro that owns
+/// it is run again (which re-arms a fresh copy). This is what keeps a wrong
+/// auto-sent password from being retried into an account lockout, and keeps a
+/// long-disarmed rule from answering an unrelated later prompt.
 pub struct Automation {
     re: regex::Regex,
     response: Response,
-    once: bool,
+    /// Key of the macro this rule was armed by; `None` for host-level expects.
+    owner: Option<String>,
     fired: bool,
 }
 
-/// Compile expect rules into runnable automations.
-pub fn build_automations(expects: &[Expect]) -> Result<Vec<Automation>, SshError> {
-    expects.iter().map(build_single_automation).collect()
+/// Compile expect rules into runnable automations, all owned by `owner`.
+pub fn build_automations(
+    expects: &[Expect],
+    owner: Option<&str>,
+) -> Result<Vec<Automation>, SshError> {
+    expects
+        .iter()
+        .map(|e| build_single_automation(e, owner))
+        .collect()
 }
 
 /// Compile a single expect rule into a runnable automation.
-pub fn build_single_automation(e: &Expect) -> Result<Automation, SshError> {
+pub fn build_single_automation(e: &Expect, owner: Option<&str>) -> Result<Automation, SshError> {
     let re = regex::Regex::new(&e.pattern)
         .map_err(|err| SshError::Automation(format!("invalid regex `{}`: {err}", e.pattern)))?;
     let response = match (&e.send, &e.send_credential) {
@@ -89,7 +100,7 @@ pub fn build_single_automation(e: &Expect) -> Result<Automation, SshError> {
     Ok(Automation {
         re,
         response,
-        once: e.once,
+        owner: owner.map(str::to_owned),
         fired: false,
     })
 }
@@ -418,9 +429,10 @@ async fn scan_and_respond<T: Transport>(
             }
         };
         transport.write(payload.as_bytes()).await?;
-        if auto.once {
-            auto.fired = true;
-        }
+        // One-shot per arming: never retry (a wrong password would be re-sent
+        // until the device blocks the account) and never linger to answer an
+        // unrelated later prompt. Re-running the owning macro re-arms the rule.
+        auto.fired = true;
         scan_buf.clear();
         break;
     }
@@ -475,10 +487,12 @@ async fn forward_stdin<T: Transport>(
         }
         crate::ssh::macro_picker::Pick::Run(key) => {
             if let Some(m) = macros.iter().find(|m| m.key == key) {
-                // Arm this macro's expects for the session (in addition to any
-                // on_connect macros already armed at connection time).
+                // Re-arm this macro's expects for one firing each: drop any
+                // copies from a previous run (or from on_connect) so rules
+                // never accumulate, then arm fresh ones.
+                automations.retain(|a| a.owner.as_deref() != Some(key.as_str()));
                 for expect in &m.expects {
-                    if let Ok(auto) = build_single_automation(expect) {
+                    if let Ok(auto) = build_single_automation(expect, Some(&key)) {
                         automations.push(auto);
                     }
                 }
@@ -527,35 +541,34 @@ mod tests {
             pattern: "x".into(),
             send: Some("a".into()),
             send_credential: Some("b".into()),
-            once: true,
         };
-        assert!(build_single_automation(&both).is_err());
+        assert!(build_single_automation(&both, None).is_err());
         let neither = Expect {
             pattern: "x".into(),
             send: None,
             send_credential: None,
-            once: true,
         };
-        assert!(build_single_automation(&neither).is_err());
+        assert!(build_single_automation(&neither, None).is_err());
         let bad_regex = Expect {
             pattern: "[".into(),
             send: Some("a".into()),
             send_credential: None,
-            once: true,
         };
-        assert!(build_single_automation(&bad_regex).is_err());
+        assert!(build_single_automation(&bad_regex, None).is_err());
     }
 
     #[tokio::test]
     async fn expect_rule_auto_responds_over_any_transport() {
         // Regression guard for the transport generalization: a literal expect must
         // still fire and write its response (+newline) to whatever transport is used.
-        let mut autos = build_automations(&[Expect {
-            pattern: "[Pp]assword:".into(),
-            send: Some("hunter2".into()),
-            send_credential: None,
-            once: true,
-        }])
+        let mut autos = build_automations(
+            &[Expect {
+                pattern: "[Pp]assword:".into(),
+                send: Some("hunter2".into()),
+                send_credential: None,
+            }],
+            Some("en"),
+        )
         .unwrap();
         let mut t = FakeTransport { written: Vec::new() };
         let mut scan = String::new();
@@ -563,7 +576,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(t.written, b"hunter2\n");
-        // `once` disarms the rule; a second match does not fire again.
+        // Firing disarms the rule (one-shot per arming); a re-prompt — e.g. a
+        // wrong password — is never answered again.
+        t.written.clear();
+        scan_and_respond(b"Password:", &mut scan, &mut autos, &mut t)
+            .await
+            .unwrap();
+        assert!(t.written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rerunning_a_macro_rearms_its_expects_without_duplicates() {
+        let expect = Expect {
+            pattern: "[Pp]assword:".into(),
+            send: Some("hunter2".into()),
+            send_credential: None,
+        };
+        // Armed at connect via on_connect, then fired once and disarmed.
+        let mut autos = build_automations(std::slice::from_ref(&expect), Some("en")).unwrap();
+        let mut t = FakeTransport { written: Vec::new() };
+        let mut scan = String::new();
+        scan_and_respond(b"Password:", &mut scan, &mut autos, &mut t)
+            .await
+            .unwrap();
+        assert_eq!(t.written, b"hunter2\n");
+
+        // Manual re-run of the same macro: drop its old copies, arm fresh ones
+        // (mirrors the `Pick::Run` path in `forward_stdin`).
+        autos.retain(|a| a.owner.as_deref() != Some("en"));
+        autos.push(build_single_automation(&expect, Some("en")).unwrap());
+        assert_eq!(autos.len(), 1);
+
+        // The re-armed rule fires exactly once more.
+        t.written.clear();
+        scan_and_respond(b"Password:", &mut scan, &mut autos, &mut t)
+            .await
+            .unwrap();
+        assert_eq!(t.written, b"hunter2\n");
         t.written.clear();
         scan_and_respond(b"Password:", &mut scan, &mut autos, &mut t)
             .await

@@ -7,7 +7,7 @@ use russh::{
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
 
 use crate::{
-    config::{Automations, Expect, Host, Macro},
+    config::{Automations, Host, Macro},
     session::{self, Incoming, Transport},
     ssh::SshError,
 };
@@ -248,18 +248,18 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
         .chain(host.macros.iter())
         .cloned()
         .collect();
-    // Expects auto-fire on output. A host's own expects always apply; additionally,
-    // each macro listed in `on_connect` contributes its own expects (e.g. the "en"
-    // macro owns the enable-password rule). So expects are opt-in per host via the
-    // macros it runs — nothing fires globally on a plain in-band-login switch.
-    let mut expects: Vec<Expect> = host.expects.clone();
+    // Expects auto-fire on output — at most once per arming. A host's own expects
+    // always apply; additionally, each macro listed in `on_connect` arms its own
+    // expects tagged with the macro's key (e.g. the "en" macro owns the
+    // enable-password rule), so a manual re-run can re-arm them without duplicates.
+    // Nothing fires globally on a plain in-band-login switch.
+    // Compile expect rules before touching the terminal so a bad regex fails cleanly.
+    let mut compiled = session::build_automations(&host.expects, None)?;
     for key in &host.on_connect {
         if let Some(m) = macros.iter().find(|m| &m.key == key) {
-            expects.extend(m.expects.iter().cloned());
+            compiled.extend(session::build_automations(&m.expects, Some(key))?);
         }
     }
-    // Compile expect rules before touching the terminal so a bad regex fails cleanly.
-    let mut compiled = session::build_automations(&expects)?;
 
     let mut channel = session.channel_open_session().await?;
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));

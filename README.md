@@ -101,6 +101,7 @@ Run `gukab`. The host list opens with a search box on top.
 | `Ctrl+K` | add a standalone keyring credential |
 | `Ctrl+G` | macro manager (add / edit / delete global macros) |
 | `Ctrl+L` | console (serial) connection form |
+| `Ctrl+O` | focus the notes panel |
 | `Esc` | quit |
 
 Inside a session, `Ctrl+A` opens the fuzzy **macro picker** (`Enter` runs,
@@ -108,13 +109,19 @@ Inside a session, `Ctrl+A` opens the fuzzy **macro picker** (`Enter` runs,
 On a serial console the picker also offers a **baud chooser** (pick a preset or type
 a custom rate) to change speed live.
 
+In the **notes panel** (`Ctrl+O`): `Enter` preview, `a` add, `e` edit (opens your
+editor), `r` rename, `d` delete, `l` change the section label, `h` hide the section,
+`Esc` back — the shortcut hints are shown right under the section.
+
 ## Configuration
 
 Config lives in `~/.config/gukab/` (Windows: `%APPDATA%\gukab\`):
 
 - `hosts.toml` — hosts and `[[groups]]` (icons, membership).
 - `automations.toml` — reusable macros and their `expect` rules.
+- `settings.toml` — app preferences (notes label / visibility).
 - `log/<host>/<timestamp>.log` — per-session transcripts.
+- `notes/` — panel notes, one `.md` file per note (title = file name).
 
 Credentials (passwords) are stored in the OS keychain via the `keyring` crate,
 never in `hosts.toml`.

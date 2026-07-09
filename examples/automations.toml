@@ -11,10 +11,11 @@ key = "en"
 send = "enable"
 
   # When "en" runs on connect, answer the enable-password prompt from the keychain.
+  # An expect fires AT MOST ONCE per macro run (so a wrong password is never
+  # retried into an account lockout); re-running the macro re-arms it.
   [[macros.expects]]
   pattern = "[Pp]assword:"
   send_credential = "enable"   # keychain entry name; store it with Ctrl+K
-  once = false
 
 # Multi-line macro: each non-empty line is sent as its own Enter-terminated command.
 [[macros]]

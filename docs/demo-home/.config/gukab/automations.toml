@@ -7,7 +7,6 @@ send = "enable"
   [[macros.expects]]
   pattern = "[Pp]assword:"
   send_credential = "enable-secret"
-  once = false
 
 [[macros]]
 key = "sh-run"

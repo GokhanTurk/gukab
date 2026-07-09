@@ -3,7 +3,7 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [1.8.0] - 2026-07-09
 
 ### Added
 - **Notes panel.** A notes section under the switch art in the right-hand panel.

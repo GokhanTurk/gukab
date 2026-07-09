@@ -864,12 +864,15 @@ fn draw_notes_panel(f: &mut Frame, app: &App, area: Rect) {
         let msg = if focused { "No notes yet — a adds one" } else { "No notes yet" };
         f.render_widget(Paragraph::new(msg).style(dim).alignment(Alignment::Center), list_area);
     } else {
+        // A bullet per note makes them read as separate items (files), and the
+        // leading space keeps them off the panel's left edge — the List only
+        // reserves the highlight-symbol indent while a selection exists.
         let items: Vec<ListItem> = app
             .notes
             .iter()
             .map(|n| {
                 ListItem::new(Line::styled(
-                    n.title.clone(),
+                    format!(" • {}", n.title),
                     Style::default().fg(Color::Gray),
                 ))
             })

@@ -13,9 +13,10 @@ Set Theme "Catppuccin Mocha"
 Set Padding 18
 Set TypingSpeed 85ms
 
-# Launch gukab against the sample config (HOME points at docs/demo-home).
+# Launch gukab against a throwaway COPY of the sample config — the in-demo host
+# reordering persists to hosts.toml, and it must not mutate the repo fixture.
 Hide
-Type "HOME=$PWD/docs/demo-home ./target/release/gukab" Enter
+Type "rm -rf /tmp/gukab-demo-home && cp -R docs/demo-home /tmp/gukab-demo-home && HOME=/tmp/gukab-demo-home ./target/release/gukab" Enter
 Show
 Sleep 2.5s
 
@@ -72,6 +73,14 @@ Tab           Sleep 500ms
 Enter         Sleep 1.4s
 Sleep 900ms
 Escape        Sleep 700ms
+
+# Notes panel (Ctrl+O): quick .md notes under the switch art — browse and preview.
+Ctrl+O        Sleep 1.6s
+Down          Sleep 500ms
+Down          Sleep 500ms
+Enter         Sleep 2.6s
+Escape        Sleep 600ms
+Escape        Sleep 800ms
 
 # Quit (Esc — the search box is always live, so q types into it).
 Escape        Sleep 1.2s

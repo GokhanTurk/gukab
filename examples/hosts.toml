@@ -71,9 +71,8 @@ group = "Access"
   key = "uptime"
   send = "show version | include uptime"
 
-  # A host's own expect rules always apply during its session: when `pattern`
-  # (a regex) appears in the output, gukab auto-sends the response.
+  # A host's own expect rules are armed for its session: when `pattern` (a regex)
+  # appears in the output, gukab auto-sends the response — at most once.
   [[hosts.expects]]
   pattern = "[Pp]assword:"
   send_credential = "enable"   # reads keychain entry "enable" at match time
-  once = true

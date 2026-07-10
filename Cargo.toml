@@ -1,6 +1,6 @@
 [package]
 name = "gukab"
-version = "1.8.0"
+version = "1.8.1"
 edition = "2024"
 description = "A terminal-only (TUI) SSH connection manager for network devices."
 license = "GPL-3.0-or-later"

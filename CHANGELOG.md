@@ -3,6 +3,16 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.8.1] - 2026-07-10
+
+### Fixed
+- **Cursor is visible again in the external note editor on macOS.** gukab's TUI hides
+  the terminal cursor while drawing, and handing the terminal to the editor didn't
+  undo that. Modern editors (e.g. nano 8.x on Linux) re-show the cursor themselves,
+  but macOS's stock nano (2.0.6) never touches cursor visibility — so it inherited a
+  hidden cursor. gukab now explicitly shows the cursor before launching the editor,
+  as it already did when opening a serial console.
+
 ## [1.8.0] - 2026-07-09
 
 ### Added

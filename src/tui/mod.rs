@@ -69,6 +69,15 @@ async fn event_loop(
         // (blocking), then re-enter the TUI and re-read the notes folder.
         if let Some(path) = app.pending_note_edit.take() {
             ratatui::restore();
+            // ratatui::restore() leaves the alternate screen but not the cursor-hide
+            // from draw(); old editors (macOS's stock nano 2.0.6) never re-show the
+            // cursor themselves, so make it visible before handing the terminal over.
+            {
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                let _ = out.write_all(b"\x1b[?25h");
+                let _ = out.flush();
+            }
             let result = crate::notes::open_in_editor(&path);
             *terminal = ratatui::init();
             if let Err(e) = result {

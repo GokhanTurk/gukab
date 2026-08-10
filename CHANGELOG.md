@@ -3,6 +3,45 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.9.0] - 2026-08-10
+
+### Fixed
+- **Aruba (and other Mocana-based) switches connect again.** gukab's algorithm list
+  offered no ECDH NIST curves, while the Mocana SSH 6.3 stack on Aruba switches offers
+  **only** `ecdh-sha2-nistp256` — so key exchange failed with "Key exchange init failed"
+  before the host key was ever seen, even though `ssh user@switch` from a terminal
+  worked. `ecdh-sha2-nistp256/384/521` are now offered (after curve25519, before the
+  DH groups — OpenSSH's order), which also covers other Mocana-based gear. gukab now
+  offers every kex, cipher, MAC and host-key algorithm that russh implements; russh's
+  own default list deliberately omits the NIST curves, so this list is maintained
+  by hand.
+
+### Changed
+- **Authentication only uses methods the device advertises, and offers a credential
+  exactly once** (lockout protection). Previously a wrong password was sent twice — once
+  as `password`, then the *same* password again through `keyboard-interactive` — because
+  "the password is wrong" and "the device doesn't offer this method" were not
+  distinguished. gukab now probes with `none` first (which carries no credential, and is
+  also the login for switches that authenticate in-band over the shell), reads the
+  methods the device reports, and then makes a single attempt: public key if the device
+  offers `publickey`, otherwise one password attempt via `password`, or via
+  `keyboard-interactive` for devices that only advertise that. So a wrong credential
+  costs a device's login-attempt counter one failure instead of three.
+- **A key host's passphrase is never offered as a login password.** On a host with an
+  `identity_file`, the keyring secret is the key's passphrase; if key auth failed, that
+  passphrase used to be sent to the device as a password — a wasted attempt that also
+  handed the passphrase to the far end. It is now used only to unlock the key.
+- **A connection that never comes up returns to the host list** instead of exiting
+  gukab. One wrong password, a changed host key, a serial port you lack permission on,
+  or a bad expect regex now shows a centered popup with the full error (`Esc` closes it)
+  and leaves you on the list with your selection, search filter, collapsed groups and
+  any host edits intact. A session that actually ran and then ended still exits gukab,
+  leaving its scrollback on screen.
+- **Failed authentication says why.** The error now names the methods the device offered
+  and the one gukab tried (e.g. `device offers: password, keyboard-interactive; tried:
+  password`), and calls out the cases where nothing could be tried at all — no stored
+  credential, or a device offering no method usable with this host's credential.
+
 ## [1.8.1] - 2026-07-10
 
 ### Fixed

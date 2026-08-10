@@ -87,8 +87,52 @@ pub fn draw(f: &mut Frame, app: &App) {
                 }
             }
         },
+        AppMode::Error(ref msg) => draw_error(f, msg, area),
         AppMode::Normal => {}
     }
+}
+
+/// A connection that never came up. Sized to the message because these run long:
+/// the serial permission hint is four lines of `sudo usermod` instructions.
+fn draw_error(f: &mut Frame, msg: &str, area: Rect) {
+    let popup_width = area.width.saturating_sub(4).clamp(20, 72);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title(" Connection failed ")
+        .title_alignment(Alignment::Center);
+
+    // Wrapped line count for the text width inside the borders, so the popup grows
+    // with the message instead of clipping it.
+    let text_width = popup_width.saturating_sub(2).max(1) as usize;
+    let lines: usize = msg
+        .lines()
+        .map(|l| l.chars().count().div_ceil(text_width).max(1))
+        .sum();
+    // +2 borders, +2 for the blank line and the hint row.
+    let popup_height = (lines as u16 + 4).clamp(6, area.height.saturating_sub(2).max(6));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    f.render_widget(Clear, popup_area);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(msg.to_string()).wrap(Wrap { trim: false }),
+        rows[0],
+    );
+    f.render_widget(
+        Paragraph::new("Esc back to the list")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center),
+        rows[1],
+    );
 }
 
 fn draw_search(f: &mut Frame, app: &App, area: Rect) {
@@ -1248,5 +1292,50 @@ mod render_tests {
         form.advanced_open = true;
         let text = render(&mut term, &form);
         assert!(text.contains("Flow control"), "advanced rows should show");
+    }
+
+    #[test]
+    fn connection_error_popup_shows_every_line_and_closes() {
+        use crate::config::Settings;
+        use crate::tui::app::AppMode;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = crate::tui::app::App::new(
+            Vec::new(),
+            Vec::new(),
+            crate::config::Automations::default(),
+            Settings::default(),
+        );
+        // The serial permission hint is the longest message the popup has to carry.
+        app.show_error(
+            "permission denied opening /dev/ttyUSB0.\n\
+             This device is owned by the 'uucp' group. Add yourself to it:\n\
+             \x20   sudo usermod -aG uucp $USER\n\
+             Then LOG OUT and back in for the change to take effect."
+                .into(),
+        );
+
+        let backend = TestBackend::new(120, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Connection failed"), "{text}");
+        assert!(
+            text.contains("sudo usermod -aG uucp $USER"),
+            "the multi-line hint must not be clipped"
+        );
+        assert!(text.contains("Then LOG OUT"), "last line must be visible");
+        assert!(text.contains("Esc back to the list"));
+
+        // Esc dismisses the popup and leaves the user on the host list.
+        app.update(KeyEvent::from(KeyCode::Esc));
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert!(!app.should_quit, "Esc in the popup must not quit gukab");
     }
 }

@@ -2,7 +2,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use russh::{
     cipher, client, client::AuthResult, client::KeyboardInteractiveAuthResponse, kex,
-    keys::PrivateKeyWithHashAlg, mac, ChannelMsg, Preferred,
+    keys::PrivateKeyWithHashAlg, mac, ChannelMsg, MethodKind, MethodSet, Preferred,
 };
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
 
@@ -111,6 +111,12 @@ fn legacy_compatible_preferred() -> Preferred {
             kex::MLKEM768X25519_SHA256,
             kex::CURVE25519,
             kex::CURVE25519_PRE_RFC_8731,
+            // NIST curves: russh leaves these out of its own default list, but some
+            // switch SSH stacks (e.g. Aruba's Mocana SSH 6.3) offer *only*
+            // ecdh-sha2-nistp256 — without them KEX fails before the host-key check.
+            kex::ECDH_SHA2_NISTP256,
+            kex::ECDH_SHA2_NISTP384,
+            kex::ECDH_SHA2_NISTP521,
             kex::DH_GEX_SHA256,
             kex::DH_G18_SHA512,
             kex::DH_G17_SHA512,
@@ -194,17 +200,29 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     let mut session =
         client::connect(config, (host.hostname.as_str(), host.port), handler).await?;
 
-    // Auth order, each tried only if the previous failed:
-    //   1. public key (if `identity_file` is set) — passphrase from the keyring,
-    //   2. plain password (if a secret is available),
-    //   3. keyboard-interactive answering each prompt with the password (common on
-    //      switches like Planet that only advertise keyboard-interactive),
-    //   4. "none" — some switches do no SSH-layer auth and present their own
-    //      Username/Password login over the shell; let the device prompt in-band.
-    // This mirrors what the OpenSSH client does automatically.
+    // Auth follows what the OpenSSH client does: probe with "none" first, then try
+    // only the methods the device actually advertises. Sending a credential by a
+    // method the device did not offer just burns an attempt against its lockout
+    // counter, and retrying the same password by a second method burns another —
+    // so each credential is offered exactly once, by one method.
+    //
+    // The "none" probe carries no credential. It doubles as the login for switches
+    // that do no SSH-layer auth at all (Planet and friends present their own
+    // Username/Password over the shell), and otherwise reports which methods remain.
     let mut authenticated = false;
+    let mut methods = MethodSet::empty();
+    match session.authenticate_none(&host.username).await? {
+        AuthResult::Success => authenticated = true,
+        AuthResult::Failure {
+            remaining_methods, ..
+        } => methods = remaining_methods,
+    }
 
-    if !host.identity_file.is_empty() {
+    // What we actually attempted, for the error message if everything fails.
+    let mut tried: Vec<&str> = Vec::new();
+
+    if !authenticated && !host.identity_file.is_empty() && methods.contains(&MethodKind::PublicKey)
+    {
         let key = load_identity(&host.identity_file, secret.as_deref())?;
         let hash_alg = if key.algorithm().is_rsa() {
             Some(HashAlg::Sha256)
@@ -212,33 +230,46 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
             None
         };
         let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
-        if matches!(
-            session.authenticate_publickey(&host.username, key).await?,
-            AuthResult::Success
-        ) {
-            authenticated = true;
+        tried.push("publickey");
+        match session.authenticate_publickey(&host.username, key).await? {
+            AuthResult::Success => authenticated = true,
+            AuthResult::Failure {
+                remaining_methods, ..
+            } => methods = remaining_methods,
         }
     }
 
-    if !authenticated && let Some(password) = secret.as_deref() {
-        authenticated = match session
-            .authenticate_password(&host.username, password.to_string())
-            .await?
-        {
-            AuthResult::Success => true,
-            _ => keyboard_interactive_auth(&mut session, &host.username, password).await?,
-        };
+    // One password attempt, by whichever of the two password-carrying methods the
+    // device offers. `password` is preferred because its outcome is unambiguous;
+    // keyboard-interactive is the fallback for devices that only advertise it.
+    //
+    // Key hosts are excluded: there the keyring secret is the key's *passphrase*, not
+    // a login password, so offering it to the device would both waste an attempt and
+    // hand the passphrase to the far end.
+    if !authenticated
+        && host.identity_file.is_empty()
+        && let Some(password) = secret.as_deref()
+    {
+        if methods.contains(&MethodKind::Password) {
+            tried.push("password");
+            authenticated = session
+                .authenticate_password(&host.username, password.to_string())
+                .await?
+                .success();
+        } else if methods.contains(&MethodKind::KeyboardInteractive) {
+            tried.push("keyboard-interactive");
+            authenticated =
+                keyboard_interactive_auth(&mut session, &host.username, password).await?;
+        }
     }
 
     if !authenticated {
-        authenticated = matches!(
-            session.authenticate_none(&host.username).await?,
-            AuthResult::Success
-        );
-    }
-
-    if !authenticated {
-        return Err(SshError::AuthFailed);
+        return Err(SshError::AuthFailed(auth_failure_detail(
+            &methods,
+            &tried,
+            secret.is_some(),
+            &host.identity_file,
+        )));
     }
 
     // Macros are always available (manual via Ctrl+A / on_connect; never auto-fire).
@@ -398,6 +429,35 @@ fn warn_if_world_readable(path: &std::path::Path) {
 /// Authenticate via keyboard-interactive, answering every prompt with `password`.
 /// Network gear typically sends a single "Password:" prompt; the loop also handles
 /// info-only requests (empty prompt list) and is bounded to avoid a stuck server.
+/// Why an authentication sequence failed: what the device offered, what gukab
+/// actually tried, and — when it tried nothing — why not. This text is what the user
+/// sees in the TUI, so it has to be enough to act on without a packet capture.
+fn auth_failure_detail(
+    methods: &MethodSet,
+    tried: &[&str],
+    have_secret: bool,
+    identity_file: &str,
+) -> String {
+    let offered: Vec<&str> = methods.iter().map(<&str>::from).collect();
+    let offered = if offered.is_empty() {
+        "none".to_string()
+    } else {
+        offered.join(", ")
+    };
+    if tried.is_empty() {
+        let reason = if !identity_file.is_empty() {
+            "nothing tried — the device does not offer publickey, and on a key host \
+             credential_ref holds the key passphrase, not a login password"
+        } else if !have_secret {
+            "nothing to try — no credential stored for this host (set credential_ref or identity_file)"
+        } else {
+            "nothing tried — the device offers no method gukab can use with this host's credential"
+        };
+        return format!("device offers: {offered}; {reason}");
+    }
+    format!("device offers: {offered}; tried: {}", tried.join(", "))
+}
+
 async fn keyboard_interactive_auth(
     session: &mut client::Handle<ClientHandler>,
     user: &str,
@@ -431,4 +491,47 @@ async fn keyboard_interactive_auth(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    fn set(methods: &[MethodKind]) -> MethodSet {
+        MethodSet::from(methods)
+    }
+
+    #[test]
+    fn failure_detail_names_offered_and_tried_methods() {
+        let offered = set(&[MethodKind::Password, MethodKind::KeyboardInteractive]);
+        let msg = auth_failure_detail(&offered, &["password"], true, "");
+        assert!(msg.contains("password, keyboard-interactive"), "{msg}");
+        assert!(msg.contains("tried: password"), "{msg}");
+    }
+
+    #[test]
+    fn failure_detail_explains_when_nothing_was_tried() {
+        // No keyring secret and no key file: there was nothing to send.
+        let offered = set(&[MethodKind::Password]);
+        let msg = auth_failure_detail(&offered, &[], false, "");
+        assert!(msg.contains("no credential stored"), "{msg}");
+
+        // A password is stored but the device only accepts a key.
+        let offered = set(&[MethodKind::PublicKey]);
+        let msg = auth_failure_detail(&offered, &[], true, "");
+        assert!(msg.contains("publickey"), "{msg}");
+        assert!(msg.contains("no method gukab can use"), "{msg}");
+
+        // Key host whose device offers only password: the keyring secret is the key
+        // passphrase, so it is deliberately never offered as a login password.
+        let offered = set(&[MethodKind::Password]);
+        let msg = auth_failure_detail(&offered, &[], true, "~/.ssh/id_ed25519");
+        assert!(msg.contains("key passphrase"), "{msg}");
+    }
+
+    #[test]
+    fn failure_detail_handles_a_device_offering_nothing() {
+        let msg = auth_failure_detail(&MethodSet::empty(), &[], true, "");
+        assert!(msg.contains("device offers: none"), "{msg}");
+    }
 }

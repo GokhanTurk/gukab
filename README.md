@@ -11,7 +11,12 @@ Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
   `router-03`); the closest match floats to the top.
 - **Host groups** — collapsible, per-group icons, indented members.
 - **SSH key auth** — per-host `identity_file`; only the key path is stored, the
-  passphrase (if any) comes from the keychain.
+  passphrase (if any) comes from the keychain and is used only to unlock the key.
+- **Connects to old and new gear alike** — offers everything from post-quantum kex down
+  to the SHA-1/CBC fallbacks legacy switch stacks need, so a device you can reach with
+  plain `ssh` works here too. Authentication uses only the methods the device
+  advertises and offers a credential **once**, so a wrong password costs the device's
+  login-attempt counter one failure, not three.
 - **Serial / console connections** — connect to a device console over a USB-serial
   adapter (`Ctrl+L` or the **＋ Console connection…** row): pick the device
   (auto-detected ports) and baud, with an Advanced section for data/parity/stop/flow;
@@ -104,6 +109,11 @@ Run `gukab`. The host list opens with a search box on top.
 | `Ctrl+O` | focus the notes panel |
 | `Esc` | quit |
 
+If a connection can't be established — wrong password, changed host key, a serial port
+you lack permission on — gukab shows the reason in a popup and returns you to the list
+(`Esc` closes it), with your selection and search filter intact. A session that ran and
+then ended exits gukab, leaving its scrollback in your shell.
+
 Inside a session, `Ctrl+A` opens the fuzzy **macro picker** (`Enter` runs,
 `Esc` cancels, `Ctrl+D` disconnects, `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`).
 On a serial console the picker also offers a **baud chooser** (pick a preset or type
@@ -135,6 +145,10 @@ Copy-paste starting points (fully commented):
 
 - **Credentials** live only in the OS keychain (`keyring`); they are never written
   to `hosts.toml`, logs, or the terminal.
+- **One authentication attempt per connection:** gukab only tries methods the device
+  advertises and offers a credential once, so a wrong password can't walk a device's
+  login-attempt counter into a lockout. A key host's passphrase is used solely to unlock
+  the key — it is never sent to the device as a password.
 - **Host-key verification (TOFU):** on first connect a server's SSH host-key
   fingerprint is recorded in `~/.config/gukab/known_hosts`; later connections are
   refused if the key changes (possible MITM). To accept a legitimate key change,

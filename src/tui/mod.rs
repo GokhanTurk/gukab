@@ -8,8 +8,7 @@ use thiserror::Error;
 
 use crate::{
     config::{Automations, Group, Host},
-    serial::{self, SerialParams},
-    ssh,
+    serial, ssh,
 };
 use app::App;
 
@@ -27,33 +26,47 @@ pub async fn run(
     automations: Automations,
 ) -> Result<(), TuiError> {
     let settings = crate::config::load_settings().unwrap_or_default();
-    let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, hosts, groups, automations, settings).await;
-    ratatui::restore();
+    // The App outlives the terminal so that a failed connection can drop the user back
+    // into the list with their selection, search filter, collapsed groups and any host
+    // edits from this session still intact.
+    let mut app = App::new(hosts, groups, automations, settings);
 
-    // `automations` may have been edited in the macro manager this session, so use
-    // the copy handed back out of the event loop (not the original) when connecting.
-    let (pending_host, pending_serial, automations) = result?;
-    if let Some(host) = pending_host {
-        ssh::client::connect(&host, &automations).await?;
-    } else if let Some(params) = pending_serial {
-        serial::client::connect_serial(&params, &automations).await?;
+    loop {
+        let mut terminal = ratatui::init();
+        let result = event_loop(&mut terminal, &mut app).await;
+        ratatui::restore();
+        result?;
+
+        // `app.automations` may have been edited in the macro manager this session, so
+        // the connection always reads the live copy.
+        let outcome = if let Some(host) = app.pending_connect.take() {
+            ssh::client::connect(&host, &app.automations).await
+        } else if let Some(params) = app.pending_serial.take() {
+            serial::client::connect_serial(&params, &app.automations).await
+        } else {
+            break; // the user quit
+        };
+
+        // A session that ran and ended exits gukab, leaving its scrollback on screen.
+        // A connection that never came up is recoverable: show why and go back to the
+        // list rather than dumping the user out to the shell over one wrong password.
+        match outcome {
+            Ok(()) => break,
+            Err(e) => app.show_error(e.to_string()),
+        }
     }
 
     Ok(())
 }
 
+/// Runs the TUI until the user quits or asks for a connection. Returns with the
+/// request left in `app.pending_connect` / `app.pending_serial` for `run` to act on.
 async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
-    hosts: Vec<Host>,
-    groups: Vec<Group>,
-    automations: Automations,
-    settings: crate::config::Settings,
-) -> Result<(Option<Host>, Option<SerialParams>, Automations), TuiError> {
-    let mut app = App::new(hosts, groups, automations, settings);
-
+    app: &mut App,
+) -> Result<(), TuiError> {
     loop {
-        terminal.draw(|f| ui::draw(f, &app))?;
+        terminal.draw(|f| ui::draw(f, app))?;
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
@@ -91,9 +104,5 @@ async fn event_loop(
         }
     }
 
-    Ok((
-        app.pending_connect,
-        app.pending_serial,
-        std::mem::take(&mut app.automations),
-    ))
+    Ok(())
 }

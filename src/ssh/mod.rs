@@ -10,8 +10,8 @@ use thiserror::Error;
 pub enum SshError {
     #[error("Connection error: {0}")]
     Russh(#[from] russh::Error),
-    #[error("Authentication failed")]
-    AuthFailed,
+    #[error("Authentication failed — {0}")]
+    AuthFailed(String),
     #[error("Keyring error: {0}")]
     Keyring(String),
     #[error("Automation config error: {0}")]

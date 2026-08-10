@@ -129,6 +129,9 @@ pub enum AppMode {
     Console(ConsoleForm),
     /// The notes panel has focus (Ctrl+O); the inner screen is the current popup.
     Notes(NotesScreen),
+    /// A connection that never came up, shown as a popup over the list. Holds the
+    /// error text, which may be several lines (e.g. the serial permission hint).
+    Error(String),
 }
 
 /// Sub-screen of the notes panel. `List` is the plain focused panel; the rest
@@ -640,6 +643,11 @@ impl App {
         self.status = Some(msg);
     }
 
+    /// Show a failed connection as a modal popup over the list.
+    pub fn show_error(&mut self, msg: String) {
+        self.mode = AppMode::Error(msg);
+    }
+
     /// The host index of the currently selected row, if it is a host row.
     fn selected_host_idx(&self) -> Option<usize> {
         match self.rows.get(self.selected) {
@@ -850,6 +858,17 @@ impl App {
             AppMode::Macros(_) => self.update_macros(key),
             AppMode::Console(_) => self.update_console(key),
             AppMode::Notes(_) => self.update_notes(key),
+            AppMode::Error(_) => self.update_error(key),
+        }
+    }
+
+    /// The connection-error popup is modal and has nothing to do but close.
+    fn update_error(&mut self, key: KeyEvent) {
+        if matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q')
+        ) {
+            self.mode = AppMode::Normal;
         }
     }
 
@@ -958,9 +977,10 @@ impl App {
                     self.apply_filter();
                 }
                 Some(Row::Host { idx, .. }) => {
+                    // Only request the connection — `should_quit` stays false, because a
+                    // connection that fails comes back to this list instead of quitting.
                     let host = self.hosts[*idx].clone();
                     self.pending_connect = Some(host);
-                    self.should_quit = true;
                 }
                 Some(Row::ConsoleAction) => {
                     self.mode = AppMode::Console(ConsoleForm::new());
@@ -1448,10 +1468,9 @@ impl App {
                     form.clamp_focus();
                 } else {
                     match form.build_params() {
-                        Ok(params) => {
-                            self.pending_serial = Some(params);
-                            self.should_quit = true;
-                        }
+                        // As with a host row: request the connection only. A port that
+                        // cannot be opened returns to the list with the error.
+                        Ok(params) => self.pending_serial = Some(params),
                         // Disjoint field write (not `set_status`) — `form` still
                         // borrows `self.mode` here.
                         Err(e) => self.status = Some(e),
@@ -1942,5 +1961,34 @@ mod macro_tests {
         bad.pattern = "[".into();
         bad.send = "x".into();
         assert!(build_expect(&bad).is_err());
+    }
+
+    /// Requesting a connection must not also request a quit: `run` re-enters the TUI
+    /// after a failed connect, and a lingering `should_quit` made the error popup
+    /// flash for one frame before gukab exited.
+    #[test]
+    fn enter_on_host_row_requests_connect_without_quitting() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let host: Host = toml::from_str(
+            "name = \"sw1\"\nhostname = \"10.0.0.1\"\nusername = \"admin\"\n",
+        )
+        .expect("host fixture should parse");
+        let mut app = App::new(
+            vec![host],
+            Vec::new(),
+            Automations::default(),
+            crate::config::Settings::default(),
+        );
+
+        // Row 0 is the always-present console action row; the host sits below it.
+        app.update(KeyEvent::from(KeyCode::Down));
+        app.update(KeyEvent::from(KeyCode::Enter));
+
+        assert!(app.pending_connect.is_some(), "Enter should request connect");
+        assert!(
+            !app.should_quit,
+            "a connect request must not quit the app — the list is returned to on failure"
+        );
     }
 }

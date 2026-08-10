@@ -8,7 +8,8 @@
 # SSH key auth: set `identity_file` to a private key path (`~` is expanded). Only
 # the path is stored — never the key itself. If the key is passphrase-protected,
 # put the passphrase in the keychain (Ctrl+K) and name it in `credential_ref`; a
-# passphrase-less key leaves `credential_ref` empty.
+# passphrase-less key leaves `credential_ref` empty. On a key host that secret is used
+# only to unlock the key — it is never sent to the device as a login password.
 
 # ---- Groups (optional) -------------------------------------------------------
 # Each group is a collapsible header in the host list. `icon` is any glyph you

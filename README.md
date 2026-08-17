@@ -1,11 +1,28 @@
-# gukab
+<h1 align="center">
+  <img src="docs/banner.svg" alt="gukab — terminal SSH + serial console manager" width="880">
+</h1>
+
+<p align="center">
+  <em>Fuzzy-find the switch, hit Enter, you're in — over SSH or straight into the
+  console port, from the same terminal window.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/GokhanTurk/gukab/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/GokhanTurk/gukab?style=flat-square&labelColor=0b1118&color=2dd4bf"></a>
+  <img alt="platforms" src="https://img.shields.io/badge/Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-22d3ee?style=flat-square&labelColor=0b1118">
+  <img alt="built with Rust" src="https://img.shields.io/badge/Rust-38bdf8?style=flat-square&logo=rust&logoColor=white&labelColor=0b1118">
+  <img alt="no OpenSSL" src="https://img.shields.io/badge/pure%20Rust%20SSH-no%20OpenSSL-818cf8?style=flat-square&labelColor=0b1118">
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-GPL--3.0-c084fc?style=flat-square&labelColor=0b1118"></a>
+</p>
 
 A terminal-only (TUI) SSH **and serial/console** connection manager for network
 devices. Built in Rust with `ratatui` + `russh` (pure-Rust SSH, no OpenSSL).
 Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
 (Apple Silicon + Intel).
 
-![gukab demo](docs/demo.gif)
+<p align="center">
+  <img src="docs/demo.gif" alt="gukab demo — fuzzy search, connect, macros" width="880">
+</p>
 
 - **Fuzzy host search** — type a few characters in any order (`r3` finds
   `router-03`); the closest match floats to the top.

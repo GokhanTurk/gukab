@@ -14,7 +14,7 @@ On launch: search box at top, host list below, live fuzzy filtering.
 | `Ctrl+N` | add-host form (the form title reads **Add Host** for new, **Edit Host** when editing — both use the same `AppMode::Editing`, distinguished by `original_idx`) |
 | `Ctrl+D` | delete the selected host (a `ConfirmDelete` prompt; `y`/Enter confirms, `n`/Esc cancels) — removes it from `hosts.toml` |
 | `Ctrl+↑` / `Ctrl+↓` (or `Shift+↑` / `Shift+↓`) | move the selected host up/down **within its group**, persisted to `hosts.toml` (disabled while a search filter is active, since the list is then ranked by relevance not stored order). `Shift+↑/↓` is the macOS-friendly alternative — there `Ctrl+↑/↓` is intercepted by Mission Control / App Exposé before reaching the terminal |
-| `Ctrl+K` | add a standalone keyring credential (ref + password) — for secrets that expect rules reference (e.g. an enable password), independent of any host |
+| `Ctrl+K` | add a standalone keyring credential (ref + password) — for secrets that expect rules reference (e.g. an enable password), independent of any host. The ref is also added to `[[credentials]]` in `automations.toml`, so the in-session picker can paste it |
 | `Ctrl+G` | open the **macro manager** (see [automation.md](automation.md)) |
 | `Ctrl+L` | open the **console (serial) connection** form (the always-present **＋ Console connection…** row at the top of the list does the same — see [serial.md](serial.md)) |
 | `Ctrl+O` | focus the **notes panel** on the right (un-hiding it if hidden) |

@@ -95,6 +95,30 @@ pub struct Group {
 pub struct Automations {
     #[serde(default)]
     pub macros: Vec<Macro>,
+    /// Keyring entries offered for manual pasting from the in-session `Ctrl+A` picker
+    /// (e.g. a sudo password). Names only — the secrets stay in the OS keychain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<CredentialName>,
+}
+
+/// The name of a keyring entry (`keyring::Entry::new("gukab", reference)`) that the
+/// picker may paste. Written as `[[credentials]]` / `ref = "..."` in `automations.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CredentialName {
+    #[serde(rename = "ref")]
+    pub reference: String,
+}
+
+impl Automations {
+    /// Add `reference` to the pasteable credentials unless it is already listed.
+    /// Returns whether the list changed (so the caller knows to save).
+    pub fn register_credential(&mut self, reference: &str) -> bool {
+        if reference.is_empty() || self.credentials.iter().any(|c| c.reference == reference) {
+            return false;
+        }
+        self.credentials.push(CredentialName { reference: reference.to_string() });
+        true
+    }
 }
 
 /// App preferences persisted in `settings.toml` (owner-only, like the other
@@ -379,6 +403,22 @@ mod file_format_tests {
                 .unwrap_or_else(|e| panic!("{name}: re-read of saved file failed: {e}\n{written}"));
             assert_eq!(format!("{file:?}"), format!("{back:?}"), "{name}: data changed on save");
         }
+    }
+
+    #[test]
+    fn credential_names_register_once_and_roundtrip() {
+        let mut autos = Automations::default();
+        assert!(autos.register_credential("ubuntu24-sudo"));
+        assert!(!autos.register_credential("ubuntu24-sudo"));
+        assert!(!autos.register_credential(""));
+        let text = toml::to_string(&autos).expect("serialize");
+        assert!(text.contains("[[credentials]]") && text.contains("ref = \"ubuntu24-sudo\""), "{text}");
+        let back: Automations = toml::from_str(&text).expect("parse");
+        assert_eq!(back.credentials, autos.credentials);
+
+        // A file without credentials does not grow an empty section on save.
+        let text = toml::to_string(&Automations::default()).expect("serialize");
+        assert!(!text.contains("credentials"), "{text}");
     }
 
     #[test]

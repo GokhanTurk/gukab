@@ -1395,7 +1395,17 @@ impl App {
                 }
                 match write_credential(&reference, &password) {
                     Ok(()) => {
-                        self.set_status(format!("Credential saved (ref: {reference})"));
+                        // List the name (never the secret) so the in-session Ctrl+A
+                        // picker can offer it for pasting.
+                        let status = if !self.automations.register_credential(&reference) {
+                            format!("Credential saved (ref: {reference})")
+                        } else if let Err(e) = crate::config::save_automations(&self.automations)
+                        {
+                            format!("Credential saved, but listing it failed: {e}")
+                        } else {
+                            format!("Credential saved (ref: {reference}) · pasteable via Ctrl+A")
+                        };
+                        self.set_status(status);
                         self.mode = AppMode::Normal;
                     }
                     Err(e) => self.set_status(e),
@@ -1885,7 +1895,7 @@ mod macro_tests {
         // Trailing blank command line is dropped; interior lines joined with `\n`.
         assert_eq!(m.send, "switchport mode access\nspanning-tree portfast");
 
-        let autos = Automations { macros: vec![m] };
+        let autos = Automations { macros: vec![m], ..Default::default() };
         let serialized = toml::to_string(&autos).expect("serialize");
         let back: Automations = toml::from_str(&serialized).expect("parse");
         assert_eq!(back.macros.len(), 1);

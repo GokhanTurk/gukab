@@ -287,6 +287,11 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
         .chain(host.macros.iter())
         .cloned()
         .collect();
+    // Pasteable from the Ctrl+A picker: this host's login password (a key host's
+    // `credential_ref` is its key passphrase, which is never offered) and the
+    // registered credential names.
+    let host_password = host.identity_file.is_empty().then_some(host.credential_ref.as_str());
+    let credentials = session::paste_credentials(host_password, &automations.credentials);
     // Expects auto-fire on output — at most once per arming. A host's own expects
     // always apply; additionally, each macro listed in `on_connect` arms its own
     // expects tagged with the macro's key (e.g. the "en" macro owns the
@@ -347,7 +352,15 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
     crossterm::terminal::enable_raw_mode()?;
     let mut transport = SshTransport { channel: &mut channel, pty: (cols, rows) };
     let result =
-        session::run_session(&mut transport, &macros, &mut compiled, log_tx.as_ref(), None).await;
+        session::run_session(
+            &mut transport,
+            &macros,
+            &credentials,
+            &mut compiled,
+            log_tx.as_ref(),
+            None,
+        )
+        .await;
     // Always restore the local terminal, even if the session errored, so the
     // user's shell is usable again after exiting.
     session::restore_terminal();

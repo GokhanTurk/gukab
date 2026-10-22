@@ -43,6 +43,11 @@ Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
   per macro run — a wrong password is never retried into an account lockout. Add/edit
   macros in-app with the **macro manager** (`Ctrl+G`).
 - **Credentials in the OS keychain** — never written to config files.
+- **Paste a password on demand** — when `sudo` (or anything else) asks for a password,
+  pick it by name from the `Ctrl+A` menu: the connected host's own login password is
+  listed first, plus every credential saved with `Ctrl+K`. It is read from the keychain
+  at that moment and typed without Enter. If no password prompt is on screen, gukab asks
+  before sending, so a secret is never pasted into a shell by mistake.
 - **Session logging** — every session transcript saved per host/device.
 - **Notes panel** — quick notes under the switch art (`Ctrl+O`): add, preview, rename,
   delete; edited in your own editor (`$EDITOR`/nano/vim on Linux and macOS, Notepad on
@@ -120,7 +125,7 @@ Run `gukab`. The host list opens with a search box on top.
 | `Ctrl+E` | edit selected host |
 | `Ctrl+D` | delete selected host |
 | `Ctrl`/`Shift`+`↑`/`↓` | reorder a host within its group |
-| `Ctrl+K` | add a standalone keyring credential |
+| `Ctrl+K` | add a keyring credential (also listed for pasting from `Ctrl+A`) |
 | `Ctrl+G` | macro manager (add / edit / delete global macros) |
 | `Ctrl+L` | console (serial) connection form |
 | `Ctrl+O` | focus the notes panel |
@@ -134,7 +139,7 @@ then ended exits gukab, leaving its scrollback in your shell.
 Inside a session, `Ctrl+A` opens the fuzzy **macro picker** (`Enter` runs,
 `Esc` cancels, `Ctrl+D` disconnects, `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`).
 On a serial console the picker also offers a **baud chooser** (pick a preset or type
-a custom rate) to change speed live.
+a custom rate) to change speed live. `🔑` rows paste a password (no Enter is sent).
 
 In the **notes panel** (`Ctrl+O`): `Enter` preview, `a` add, `e` edit (opens your
 editor), `r` rename, `d` delete, `l` change the section label, `h` hide the section,
@@ -145,7 +150,8 @@ editor), `r` rename, `d` delete, `l` change the section label, `h` hide the sect
 Config lives in `~/.config/gukab/` (Windows: `%APPDATA%\gukab\`):
 
 - `hosts.toml` — hosts and `[[groups]]` (icons, membership).
-- `automations.toml` — reusable macros and their `expect` rules.
+- `automations.toml` — reusable macros, their `expect` rules, and the names of
+  pasteable credentials.
 - `settings.toml` — app preferences (notes label / visibility).
 - `log/<host>/<timestamp>.log` — per-session transcripts.
 - `notes/` — panel notes, one `.md` file per note (title = file name).

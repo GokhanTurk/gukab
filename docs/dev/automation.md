@@ -34,6 +34,20 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
   in-band-login switch (no `on_connect`) gets no expects and its login prompt is never
   auto-answered. Unknown keys print a notice and are skipped.
 
+- **Pasteable credentials** — the picker also lists `🔑` rows: the connected host's own
+  login password (pinned at the top; only for password hosts — a key host's
+  `credential_ref` is its key passphrase and is never offered) and every name in
+  `[[credentials]]` (`automations.toml`, names only; `Ctrl+K` adds to it). Picking one
+  reads the secret from the keychain at that moment (`read_secret`, wrapped in
+  `zeroize::Zeroizing`), and writes it to the transport **without** a newline. Nothing
+  automatic is involved — expects never touch these rows. Before sending, a
+  `PromptTail` (the current output line, escape sequences stripped) is checked: if it
+  doesn't end in a password prompt (`password` / `passphrase` / `passcode` / `parola` /
+  `şifre` … `:`), `confirm_paste` asks `[y/N]` on the local terminal — pasting into a
+  shell would echo the secret onto the screen, the session log and the remote history.
+  The secret is never shown or logged by gukab itself; once handed to the transport
+  (russh's buffers, the serial worker) it is outside gukab's control.
+
 ### Scoping summary
 
 - **Macros** (global in `automations.toml`, or per-host) are always available for manual
@@ -44,7 +58,8 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
 
 ## automations.toml
 
-Expects are nested under the macro that owns them:
+Expects are nested under the macro that owns them; `[[credentials]]` lists the
+keychain names the picker may paste:
 
 ```toml
 [[macros]]
@@ -54,6 +69,9 @@ send = "enable"
   [[macros.expects]]
   pattern = "[Pp]assword:"
   send_credential = "enable1"   # or: send = "literal"
+
+[[credentials]]
+ref = "ubuntu24-sudo"         # secret saved with Ctrl+K; only the name lives here
 
 # Multi-line macro — each non-empty line is sent as a separate Enter-terminated command.
 [[macros]]

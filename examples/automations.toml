@@ -31,3 +31,10 @@ end
 [[macros]]
 key = "wr"
 send = "write memory"
+
+# Credentials offered for manual pasting from the in-session Ctrl+A picker (e.g. when
+# sudo asks for a password). Only the keychain entry NAME is stored here — Ctrl+K saves
+# the secret and adds its name automatically. Nothing is sent without you picking it,
+# and no Enter is sent after it.
+[[credentials]]
+ref = "ubuntu24-sudo"

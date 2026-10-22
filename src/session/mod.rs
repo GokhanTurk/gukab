@@ -9,7 +9,7 @@
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
-use crate::config::{Expect, Macro};
+use crate::config::{CredentialName, Expect, Macro};
 use crate::ssh::SshError;
 
 /// One chunk of bytes received from the remote/device. `is_stderr` marks SSH
@@ -41,6 +41,100 @@ pub trait BaudControl {
     fn current(&self) -> u32;
     /// Apply a new baud rate to the open port.
     fn set_baud(&mut self, baud: u32);
+}
+
+/// A keyring entry the `Ctrl+A` picker can paste. `pinned` marks the connected
+/// host's own login password, listed at the top of the empty picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteCredential {
+    pub reference: String,
+    pub pinned: bool,
+}
+
+/// The picker's credentials: the host's own login password first (when it has one),
+/// then the names registered in `automations.toml`, without duplicates.
+pub fn paste_credentials(
+    host_ref: Option<&str>,
+    registered: &[CredentialName],
+) -> Vec<PasteCredential> {
+    let host_ref = host_ref.filter(|r| !r.is_empty());
+    let mut out: Vec<PasteCredential> = host_ref
+        .map(|r| PasteCredential { reference: r.to_string(), pinned: true })
+        .into_iter()
+        .collect();
+    for c in registered {
+        if !c.reference.is_empty() && !out.iter().any(|o| o.reference == c.reference) {
+            out.push(PasteCredential { reference: c.reference.clone(), pinned: false });
+        }
+    }
+    out
+}
+
+/// The current output line with escape sequences stripped — enough to tell whether
+/// the remote is asking for a password right now (the cursor sits after the prompt).
+#[derive(Default)]
+struct PromptTail {
+    line: Vec<u8>,
+    esc: EscState,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum EscState {
+    #[default]
+    Text,
+    Esc,
+    Csi,
+    Osc,
+}
+
+/// Longest line kept; a prompt is short, so older bytes are dropped.
+const PROMPT_TAIL_CAP: usize = 512;
+
+impl PromptTail {
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.esc = match (self.esc, b) {
+                (EscState::Text, 0x1b) => EscState::Esc,
+                (EscState::Text, b'\r' | b'\n') => {
+                    self.line.clear();
+                    EscState::Text
+                }
+                (EscState::Text, 0x08) => {
+                    self.line.pop();
+                    EscState::Text
+                }
+                (EscState::Text, b) if b >= 0x20 || b == b'\t' => {
+                    if self.line.len() == PROMPT_TAIL_CAP {
+                        self.line.remove(0);
+                    }
+                    self.line.push(b);
+                    EscState::Text
+                }
+                (EscState::Text, _) => EscState::Text,
+                (EscState::Esc, b'[') => EscState::Csi,
+                (EscState::Esc, b']') => EscState::Osc,
+                (EscState::Esc, _) => EscState::Text,
+                // CSI ends with a final byte in 0x40..=0x7e.
+                (EscState::Csi, 0x40..=0x7e) => EscState::Text,
+                (EscState::Csi, _) => EscState::Csi,
+                // OSC ends with BEL (or ST, whose ESC restarts the state machine).
+                (EscState::Osc, 0x07) => EscState::Text,
+                (EscState::Osc, 0x1b) => EscState::Esc,
+                (EscState::Osc, _) => EscState::Osc,
+            };
+        }
+    }
+
+    /// Does the current line look like a password prompt (`Password:`,
+    /// `[sudo] password for x:`, `[sudo] x için parola:`, `Enter passphrase:`)?
+    fn looks_like_password_prompt(&self) -> bool {
+        let text = String::from_utf8_lossy(&self.line).to_lowercase();
+        let text = text.trim_end();
+        text.ends_with(':')
+            && ["password", "passphrase", "passcode", "parola", "şifre"]
+                .iter()
+                .any(|k| text.contains(k))
+    }
 }
 
 /// Local escape prefix (Ctrl+A) that opens the gukab macro prompt instead of
@@ -166,6 +260,7 @@ fn local_notice(msg: &str) {
 pub async fn run_session<T: Transport>(
     transport: &mut T,
     macros: &[Macro],
+    credentials: &[PasteCredential],
     automations: &mut Vec<Automation>,
     log_tx: Option<&UnboundedSender<Vec<u8>>>,
     mut baud: Option<&mut dyn BaudControl>,
@@ -173,6 +268,7 @@ pub async fn run_session<T: Transport>(
     let mut stdout = tokio::io::stdout();
     let mut scan_buf = String::new();
     let mut hl = crate::ssh::highlight::Highlighter::new();
+    let mut prompt = PromptTail::default();
 
     // Read raw stdin on a dedicated OS thread and forward bytes over an mpsc
     // channel; a plain blocking read delivers each keystroke immediately, unlike
@@ -192,6 +288,7 @@ pub async fn run_session<T: Transport>(
             incoming = transport.recv() => {
                 match incoming {
                     Some(Incoming { bytes, is_stderr }) => {
+                        prompt.push(&bytes);
                         if is_stderr {
                             // stderr: display raw, log, but do not colorize or scan.
                             stdout.write_all(&bytes).await?;
@@ -225,9 +322,10 @@ pub async fn run_session<T: Transport>(
                             Some(b) => Some(&mut **b),
                             None => None,
                         };
-                        if !forward_stdin(
-                            &bytes, macros, transport, automations, &mut rx, baud_ref,
-                        ).await? {
+                        let ctx = PickerContext { macros, credentials, prompt: &prompt };
+                        if !forward_stdin(&bytes, &ctx, transport, automations, &mut rx, baud_ref)
+                            .await?
+                        {
                             break;
                         }
                     }
@@ -500,9 +598,17 @@ async fn scan_and_respond<T: Transport>(
 /// Forward typed bytes to the transport, intercepting the Ctrl+A escape prefix
 /// (macro prompt, which on serial also offers "cycle baud"). Returns `Ok(false)`
 /// if the session should end.
+/// What the `Ctrl+A` picker offers, plus the output line used to check for a
+/// password prompt before pasting.
+struct PickerContext<'a> {
+    macros: &'a [Macro],
+    credentials: &'a [PasteCredential],
+    prompt: &'a PromptTail,
+}
+
 async fn forward_stdin<T: Transport>(
     bytes: &[u8],
-    macros: &[Macro],
+    ctx: &PickerContext<'_>,
     transport: &mut T,
     automations: &mut Vec<Automation>,
     rx: &mut Receiver<Vec<u8>>,
@@ -532,7 +638,8 @@ async fn forward_stdin<T: Transport>(
     // Open the fuzzy macro picker; on serial it also pins a "baud rate" entry
     // showing the current baud. Any bytes after the prefix seed the query.
     let baud_now = baud.as_ref().map(|b| b.current());
-    match crate::ssh::macro_picker::pick(macros, rx, rest, baud_now).await {
+    let macros = ctx.macros;
+    match crate::ssh::macro_picker::pick(macros, ctx.credentials, rx, rest, baud_now).await {
         crate::ssh::macro_picker::Pick::Baud => {
             // Open the baud chooser (pick a preset or type a custom rate).
             if let Some(ctl) = baud
@@ -561,9 +668,48 @@ async fn forward_stdin<T: Transport>(
             }
             Ok(true)
         }
+        crate::ssh::macro_picker::Pick::Paste(reference) => {
+            // Pasting where nothing asks for a password would echo the secret on
+            // screen, into the session log and the remote shell history — so ask
+            // first unless the cursor sits after a password prompt.
+            if !ctx.prompt.looks_like_password_prompt() && !confirm_paste(&reference, rx).await {
+                local_notice("paste cancelled");
+                return Ok(true);
+            }
+            match read_secret(&reference) {
+                // Typed as if from the keyboard; no Enter — the user confirms.
+                Ok(secret) => transport.write(secret.as_bytes()).await?,
+                Err(e) => local_notice(&format!("credential '{reference}' unavailable: {e}")),
+            }
+            Ok(true)
+        }
         crate::ssh::macro_picker::Pick::Cancel => Ok(true),
         crate::ssh::macro_picker::Pick::Disconnect => Ok(false),
     }
+}
+
+/// Ask on the local terminal whether to paste although no password prompt is
+/// visible. Only `y`/`Y` confirms; anything else (including Enter) cancels.
+async fn confirm_paste(reference: &str, rx: &mut Receiver<Vec<u8>>) -> bool {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = write!(
+        out,
+        "\r\n[gukab] no password prompt on screen — paste '{reference}' anyway? [y/N] "
+    );
+    let _ = out.flush();
+    let yes = matches!(rx.recv().await.as_deref(), Some([b'y' | b'Y']));
+    let _ = write!(out, "\r\n");
+    let _ = out.flush();
+    yes
+}
+
+/// Read a secret from the OS keychain at the moment it is pasted. Never cached; the
+/// buffer is wiped when dropped.
+fn read_secret(reference: &str) -> Result<zeroize::Zeroizing<String>, keyring::Error> {
+    keyring::Entry::new("gukab", reference)
+        .and_then(|e| e.get_password())
+        .map(zeroize::Zeroizing::new)
 }
 
 #[cfg(test)]
@@ -584,6 +730,70 @@ mod tests {
         }
         async fn recv(&mut self) -> Option<Incoming> {
             None
+        }
+    }
+
+    fn tail(chunks: &[&[u8]]) -> PromptTail {
+        let mut t = PromptTail::default();
+        for c in chunks {
+            t.push(c);
+        }
+        t
+    }
+
+    #[test]
+    fn password_prompts_are_recognized() {
+        for prompt in [
+            &b"[sudo] password for gokhan: "[..],
+            "\x1b[0m[sudo] gokhan için parola: ".as_bytes(),
+            b"Last login: Mon\r\nPassword:",
+            b"Enter passphrase for key '/home/g/.ssh/id_ed25519': ",
+            "Şifre: ".as_bytes(),
+        ] {
+            assert!(tail(&[prompt]).looks_like_password_prompt(), "{}", String::from_utf8_lossy(prompt));
+        }
+        // A prompt split across chunks still counts.
+        assert!(tail(&[b"[sudo] pass", b"word for g: "]).looks_like_password_prompt());
+    }
+
+    #[test]
+    fn shell_prompts_and_finished_lines_are_not_password_prompts() {
+        for text in [
+            &b"gokhan@ubuntu24:~$ "[..],
+            b"\x1b]0;gokhan@ubuntu24: ~\x07\x1b[01;32mgokhan@ubuntu24\x1b[00m:~$ ",
+            b"[sudo] password for gokhan: \r\n",          // answered, newline followed
+            b"passwd: password updated successfully\r\n$ ",
+            b"Switch#",
+        ] {
+            assert!(!tail(&[text]).looks_like_password_prompt(), "{}", String::from_utf8_lossy(text));
+        }
+    }
+
+    #[test]
+    fn paste_credentials_put_the_host_password_first_without_duplicates() {
+        let registered = vec![
+            CredentialName { reference: "enable1".into() },
+            CredentialName { reference: "srv-pass".into() },
+            CredentialName { reference: "enable1".into() },
+        ];
+        let list = paste_credentials(Some("srv-pass"), &registered);
+        let refs: Vec<(&str, bool)> = list.iter().map(|c| (c.reference.as_str(), c.pinned)).collect();
+        assert_eq!(refs, [("srv-pass", true), ("enable1", false)]);
+
+        // No host password (key host or serial): only the registered names.
+        let list = paste_credentials(Some(""), &registered);
+        assert!(list.iter().all(|c| !c.pinned));
+        assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn paste_without_a_prompt_needs_an_explicit_yes() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        tx.send(b"y".to_vec()).await.unwrap();
+        assert!(confirm_paste("srv", &mut rx).await);
+        for answer in [&b"n"[..], b"\r", b"yes"] {
+            tx.send(answer.to_vec()).await.unwrap();
+            assert!(!confirm_paste("srv", &mut rx).await, "{answer:?} must cancel");
         }
     }
 

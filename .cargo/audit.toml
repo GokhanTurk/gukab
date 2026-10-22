@@ -1,0 +1,10 @@
+# `cargo audit` configuration (local runs and the ci.yml audit job).
+# Every ignored advisory needs a reason and a condition for removing it.
+
+[advisories]
+ignore = [
+    # Marvin timing side-channel in the transitive `rsa` crate (via russh / ssh-key).
+    # No fixed release exists. Impact for gukab is assessed in the README "Security"
+    # section. Remove this line once `rsa` ships a fix and russh picks it up.
+    "RUSTSEC-2023-0071",
+]

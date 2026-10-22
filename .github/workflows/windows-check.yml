@@ -2,10 +2,11 @@ name: windows-check
 
 # Verifies the Windows (#[cfg(windows)]) code compiles, links, and passes tests on a
 # real windows-latest runner — the maintainer develops on macOS and can't build the
-# Windows target locally. Runs on the windows-support branch and on demand.
+# Windows target locally. Runs on pushes to main and the windows-support branch, on
+# PRs, and on demand.
 on:
   push:
-    branches: [windows-support]
+    branches: [main, windows-support]
   pull_request:
     branches: [main]
   workflow_dispatch:

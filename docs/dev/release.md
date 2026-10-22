@@ -43,12 +43,20 @@ actually being published. "CI started" is not delivery: if CI fails the release 
 stranded and the user waits without noticing. Report success (artifacts published) or
 failure (which job broke, where).
 
+## Continuous checks
+
+[.github/workflows/ci.yml](../../.github/workflows/ci.yml) builds, lints (`clippy
+--all-targets -D warnings`) and tests on Linux and macOS, and runs `cargo audit`, on every
+push to `main`, on PRs, and weekly (so a new advisory against an unchanged `Cargo.lock`
+still surfaces). Accepted advisories live in [.cargo/audit.toml](../../.cargo/audit.toml),
+each with its reason and removal condition.
+
 ## Windows
 
 The maintainer develops on Linux/macOS. `#[cfg(windows)]` code is verified by
 [.github/workflows/windows-check.yml](../../.github/workflows/windows-check.yml) — it runs
-on the `windows-support` branch, on PRs to `main`, and via `workflow_dispatch`. Trigger it
-manually when Windows-specific code changes outside a release.
+on pushes to `main` and the `windows-support` branch, on PRs to `main`, and via
+`workflow_dispatch`.
 
 ## Wiki
 

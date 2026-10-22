@@ -346,6 +346,55 @@ mod settings_tests {
     }
 }
 
+// Guards against dependency upgrades (serde/toml) silently changing how existing
+// config files are read or written: every config file shipped in the repo must
+// still parse, and what gukab writes must read back to the same data.
+#[cfg(test)]
+mod file_format_tests {
+    use super::{Automations, HostsFile};
+
+    const HOSTS_FILES: &[(&str, &str)] = &[
+        ("examples/hosts.toml", include_str!("../../examples/hosts.toml")),
+        (
+            "docs/demo-home/.config/gukab/hosts.toml",
+            include_str!("../../docs/demo-home/.config/gukab/hosts.toml"),
+        ),
+    ];
+    const AUTOMATION_FILES: &[(&str, &str)] = &[
+        ("examples/automations.toml", include_str!("../../examples/automations.toml")),
+        (
+            "docs/demo-home/.config/gukab/automations.toml",
+            include_str!("../../docs/demo-home/.config/gukab/automations.toml"),
+        ),
+    ];
+
+    #[test]
+    fn shipped_hosts_files_parse_and_roundtrip() {
+        for (name, text) in HOSTS_FILES {
+            let file: HostsFile =
+                toml::from_str(text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
+            assert!(!file.hosts.is_empty(), "{name}: no hosts parsed");
+            let written = toml::to_string(&file).expect("serialize");
+            let back: HostsFile = toml::from_str(&written)
+                .unwrap_or_else(|e| panic!("{name}: re-read of saved file failed: {e}\n{written}"));
+            assert_eq!(format!("{file:?}"), format!("{back:?}"), "{name}: data changed on save");
+        }
+    }
+
+    #[test]
+    fn shipped_automation_files_parse_and_roundtrip() {
+        for (name, text) in AUTOMATION_FILES {
+            let autos: Automations =
+                toml::from_str(text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
+            assert!(!autos.macros.is_empty(), "{name}: no macros parsed");
+            let written = toml::to_string(&autos).expect("serialize");
+            let back: Automations = toml::from_str(&written)
+                .unwrap_or_else(|e| panic!("{name}: re-read of saved file failed: {e}\n{written}"));
+            assert_eq!(format!("{autos:?}"), format!("{back:?}"), "{name}: data changed on save");
+        }
+    }
+}
+
 // Unix-only: asserts against `/home/...` paths and drives `HOME` (on Windows the
 // home dir comes from `%USERPROFILE%`).
 #[cfg(all(test, unix))]

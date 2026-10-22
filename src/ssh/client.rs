@@ -2,7 +2,8 @@ use std::{borrow::Cow, sync::Arc};
 
 use russh::{
     cipher, client, client::AuthResult, client::KeyboardInteractiveAuthResponse, kex,
-    keys::PrivateKeyWithHashAlg, mac, ChannelMsg, MethodKind, MethodSet, Preferred,
+    keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate}, mac, ChannelMsg, MethodKind,
+    MethodSet, Preferred,
 };
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
 
@@ -24,9 +25,9 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let fingerprint = server_public_key.fingerprint(HashAlg::Sha256).to_string();
+        let fingerprint = host_key_fingerprint(server_public_key);
         let path = crate::config::known_hosts_path();
 
         match read_known_host(&path, &self.host_id) {
@@ -60,6 +61,13 @@ impl client::Handler for ClientHandler {
             }
         }
     }
+}
+
+/// SHA-256 fingerprint stored in known_hosts. A host certificate is pinned by the key
+/// it certifies (the CA signature is not checked), so a plain key and a certificate
+/// for the same key give the same entry.
+fn host_key_fingerprint(key: &PublicKeyOrCertificate) -> String {
+    key.public_key().fingerprint(HashAlg::Sha256).to_string()
 }
 
 /// Look up the stored fingerprint for `host_id` in the known_hosts file.
@@ -544,5 +552,79 @@ mod auth_tests {
     fn failure_detail_handles_a_device_offering_nothing() {
         let msg = auth_failure_detail(&MethodSet::empty(), &[], true, "");
         assert!(msg.contains("device offers: none"), "{msg}");
+    }
+}
+
+// The algorithm list is maintained by hand (russh's own default leaves out the NIST
+// curves some switches need). This fails when a russh upgrade adds an algorithm we
+// don't offer yet — or removes one we still list — so the list never drifts silently.
+#[cfg(test)]
+mod algorithm_tests {
+    use super::*;
+
+    #[test]
+    fn preferred_lists_offer_every_algorithm_russh_implements() {
+        let p = legacy_compatible_preferred();
+
+        // `none`/`clear` are the null algorithms, never negotiated on purpose.
+        for name in kex::ALL_KEX_ALGORITHMS.iter().filter(|n| ***n != kex::NONE) {
+            assert!(p.kex.contains(name), "kex {name:?} implemented by russh but not offered");
+        }
+        for name in cipher::ALL_CIPHERS
+            .iter()
+            .filter(|n| ***n != cipher::NONE && ***n != cipher::CLEAR)
+        {
+            assert!(p.cipher.contains(name), "cipher {name:?} implemented by russh but not offered");
+        }
+        for name in mac::ALL_MAC_ALGORITHMS.iter().filter(|n| ***n != mac::NONE) {
+            assert!(p.mac.contains(name), "mac {name:?} implemented by russh but not offered");
+        }
+        // Security-key (FIDO) types are user-key algorithms; no server has an sk-* host key.
+        for alg in russh::keys::key::ALL_KEY_TYPES.iter().filter(|a| {
+            !matches!(a, Algorithm::SkEcdsaSha2NistP256 | Algorithm::SkEd25519)
+        }) {
+            assert!(p.key.contains(alg), "host-key type {alg:?} implemented by russh but not offered");
+        }
+    }
+
+    #[test]
+    fn preferred_lists_only_name_algorithms_russh_implements() {
+        let p = legacy_compatible_preferred();
+        for name in p.kex.iter() {
+            // The ext-info / strict-kex markers are kex-list extensions, not algorithms.
+            let marker = [
+                kex::EXTENSION_SUPPORT_AS_CLIENT,
+                kex::EXTENSION_SUPPORT_AS_SERVER,
+                kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+                kex::EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER,
+            ]
+            .contains(name);
+            assert!(
+                marker || kex::ALL_KEX_ALGORITHMS.contains(&name),
+                "kex {name:?} offered but no longer implemented by russh"
+            );
+        }
+        for name in p.cipher.iter() {
+            assert!(cipher::ALL_CIPHERS.contains(&name), "cipher {name:?} not implemented");
+        }
+        for name in p.mac.iter() {
+            assert!(mac::ALL_MAC_ALGORITHMS.contains(&name), "mac {name:?} not implemented");
+        }
+        for alg in p.key.iter() {
+            assert!(russh::keys::key::ALL_KEY_TYPES.contains(alg), "host-key type {alg:?} not implemented");
+        }
+    }
+
+    #[test]
+    fn host_key_fingerprint_matches_the_plain_key_fingerprint() {
+        // known_hosts entries written before russh 0.64 used `PublicKey::fingerprint`;
+        // the wrapper must produce the same string or every host would look "changed".
+        let key = ssh_key::PublicKey::from_openssh(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        )
+        .expect("valid test key");
+        let expected = key.fingerprint(HashAlg::Sha256).to_string();
+        assert_eq!(host_key_fingerprint(&PublicKeyOrCertificate::from(key)), expected);
+        assert!(expected.starts_with("SHA256:"));
     }
 }

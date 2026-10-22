@@ -177,8 +177,11 @@ Copy-paste starting points (fully commented):
   by default.)
 - **Known advisory:** [`RUSTSEC-2023-0071`](https://rustsec.org/advisories/RUSTSEC-2023-0071)
   (Marvin timing side-channel in the transitive `rsa` crate) has no upstream fix
-  yet. Practical impact here is low — gukab is an SSH *client* and verifies RSA
-  server signatures rather than performing RSA private-key decryption. It will be
+  yet. Practical impact here is low: gukab never performs RSA decryption, it
+  verifies RSA server signatures, and with an RSA *user* key it signs once per
+  connection on your own machine — the attack needs many timing measurements
+  observed over the network. To take `rsa` out of the picture entirely, use an
+  Ed25519 key (`ssh-keygen -t ed25519`) wherever the device supports it. It will be
   resolved when `rsa` ships a fix.
 
 ## License

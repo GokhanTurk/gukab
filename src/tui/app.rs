@@ -1837,6 +1837,23 @@ fn write_credential(reference: &str, password: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Touches the real OS keychain, so it is opt-in: after a keyring upgrade run
+// `cargo test -- --ignored keychain` on Linux, Windows and macOS. Uses its own service
+// name, never gukab's entries, and deletes what it wrote.
+#[cfg(test)]
+mod keychain_tests {
+    #[test]
+    #[ignore = "uses the real OS keychain"]
+    fn keychain_roundtrip_on_this_platform() {
+        let entry = keyring::Entry::new("gukab-selftest", "roundtrip").expect("keychain available");
+        entry.set_password("s3cret-ü").expect("write");
+        assert_eq!(entry.get_password().expect("read back"), "s3cret-ü");
+        entry.delete_credential().expect("delete");
+        // A deleted entry must read back as NoEntry, not as a store failure.
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+}
+
 #[cfg(test)]
 mod macro_tests {
     use super::*;

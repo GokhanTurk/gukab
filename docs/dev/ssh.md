@@ -9,7 +9,11 @@ Read this before touching [src/ssh/client.rs](../../src/ssh/client.rs),
 `Host.credential_ref` (String) → `keyring::Entry::new("gukab", ref)` → `get_password()`
 
 Credentials (passwords, private keys) are **never** written to `hosts.toml`; they live
-exclusively in the OS keychain via the `keyring` crate.
+exclusively in the OS keychain via the `keyring` crate (4.x, default `v1` feature: Secret
+Service over pure-Rust zbus on Linux, Windows Credential Manager, macOS legacy keychain).
+`keychain_tests` in `src/tui/app.rs` round-trips a throwaway entry through the real
+keychain; it is `#[ignore]`d, so run `cargo test -- --ignored keychain` on each platform
+after a keyring upgrade.
 
 ## SSH key authentication
 
@@ -55,12 +59,20 @@ the host-key check ("Key exchange init failed"). Anything russh lacks entirely
 refuses those by default too, so the working rule is that a device reachable with a plain
 `ssh host` will negotiate with gukab.
 
+`algorithm_tests` (in `client.rs`) compares the list against russh's `ALL_*` tables, so a
+russh upgrade that adds or drops an algorithm fails `cargo test` until the list is updated.
+Only the null algorithms (`none`/`clear`) and the FIDO `sk-*` types (user keys, never host
+keys) are excluded.
+
 ## Host-key verification
 
 `ClientHandler::check_server_key` does trust-on-first-use — it records each server's
 SHA-256 fingerprint in `~/.config/gukab/known_hosts` (`config::known_hosts_path()`, file
 mode `0600`) and **refuses** to connect if a known host's key later changes (possible
-MITM). `hosts.toml`, `known_hosts`, and session logs are all written owner-only.
+MITM). `hosts.toml`, `known_hosts`, and session logs are all written owner-only. Since
+russh 0.64 the handler receives a `PublicKeyOrCertificate`; `host_key_fingerprint` pins a
+host certificate by the key it certifies (the CA is not checked), which keeps existing
+`known_hosts` entries valid.
 
 ## macOS: keychain re-prompts after updates
 

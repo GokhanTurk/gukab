@@ -3,6 +3,54 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [2.0.0] - 2026-10-22
+
+### Breaking
+- **The in-session picker key is now `Ctrl+G` (was `Ctrl+A`).** `Ctrl+A` is
+  beginning-of-line in bash/zsh and on switch CLIs, and many macOS terminals send it for
+  `Cmd+←` — so gukab swallowed it and you could not jump to the start of the line.
+  `Ctrl+G` is the key that already opens the macro manager in the host list. To keep
+  the old key, add to `~/.config/gukab/settings.toml`:
+  ```toml
+  [session]
+  escape_key = "ctrl-a"
+  ```
+- **Linux, Windows, macOS: saved passwords may need to be entered again.** The keychain
+  library moved from keyring 2 to keyring 4. Existing entries were read fine in testing
+  on Linux; if a host's password is not found, store it again with `Ctrl+K` or by
+  editing the host.
+
+### Added
+- **Paste a password on demand.** When `sudo` (or anything else) asks for a password,
+  open the picker and choose a `🔑` row: the connected host's own login password is
+  listed first, plus every credential saved with `Ctrl+K`. The secret is read from the
+  keychain at that moment, typed without Enter, and wiped from memory afterwards. If no
+  password prompt is on screen, gukab asks `[y/N]` before sending, so a secret is never
+  pasted into a shell, the session log or the remote history by mistake. Only the
+  credential *names* are stored, under `[[credentials]]` in `automations.toml`.
+- **Configurable picker key** — `escape_key` under `[session]` in `settings.toml` (any
+  letter or `] \ ^ _`; Ctrl+C/D/H/I/J/M are refused with a clear message). Pressing the
+  key again inside the open picker sends the key itself.
+- **The picker shows when it scrolls** — a scrollbar and "↑ n more" / "↓ n more" counters
+  appear when the list is longer than the popup.
+
+### Fixed
+- **Window resizes reach the remote side.** gukab sent the terminal size only once, at
+  connect; a full-screen program on the remote kept the old size after you resized or
+  maximised the window. Resizes are now forwarded (SSH `window-change`) on Linux,
+  Windows and macOS.
+
+### Changed
+- **Dependencies updated:** russh 0.64, keyring 4 (drops unmaintained crates pulled in by
+  the old D-Bus stack), toml 1 (config files are written exactly as before), and the
+  rest of the dependency tree.
+- **CI:** every push now builds, lints and tests on Linux, Windows and macOS, and runs a
+  dependency security audit weekly.
+
+### Security
+- The README note on the `rsa` crate's Marvin advisory (RUSTSEC-2023-0071, no upstream
+  fix yet) now also covers RSA user keys and recommends Ed25519 keys.
+
 ## [1.9.0] - 2026-08-10
 
 ### Fixed

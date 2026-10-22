@@ -25,6 +25,11 @@ pub trait Transport {
     async fn write(&mut self, data: &[u8]) -> Result<(), SshError>;
     /// Await the next chunk from the remote/device; `None` means the link closed.
     async fn recv(&mut self) -> Option<Incoming>;
+    /// The local terminal is now `cols`×`rows`. SSH forwards it as a `window-change`
+    /// request; serial has no PTY, so the default does nothing.
+    async fn resize(&mut self, _cols: u16, _rows: u16) -> Result<(), SshError> {
+        Ok(())
+    }
 }
 
 /// Optional live control surface for a serial session (baud switching). `None`
@@ -172,10 +177,18 @@ pub async fn run_session<T: Transport>(
     // Read raw stdin on a dedicated OS thread and forward bytes over an mpsc
     // channel; a plain blocking read delivers each keystroke immediately, unlike
     // `tokio::io::stdin()` inside a `select!` loop.
-    let mut rx = spawn_stdin_reader();
+    let (mut rx, mut resize) = spawn_stdin_reader();
+
+    // The window may have changed between the PTY request and now.
+    if let Ok((cols, rows)) = crossterm::terminal::size() {
+        transport.resize(cols, rows).await?;
+    }
 
     loop {
         tokio::select! {
+            (cols, rows) = resize.next() => {
+                transport.resize(cols, rows).await?;
+            }
             incoming = transport.recv() => {
                 match incoming {
                     Some(Incoming { bytes, is_stderr }) => {
@@ -231,9 +244,14 @@ pub async fn run_session<T: Transport>(
 ///
 /// Unix: the terminal is in raw mode, so `stdin` already delivers the exact VT byte
 /// stream (arrows, `Ctrl+…`, etc.) we forward to the remote.
+/// Window size changes come from SIGWINCH.
 #[cfg(unix)]
-fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
+fn spawn_stdin_reader() -> (Receiver<Vec<u8>>, ResizeWatcher) {
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let resize = ResizeWatcher {
+        signal: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+            .ok(),
+    };
     std::thread::spawn(move || {
         use std::io::Read;
         let mut stdin = std::io::stdin().lock();
@@ -250,16 +268,25 @@ fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
             }
         }
     });
-    rx
+    (rx, resize)
 }
 
 /// Windows: the console doesn't hand us a raw VT byte stream, so read crossterm key
 /// events and encode them to the same VT byte sequences the pickers/remote expect.
+/// There is no SIGWINCH; `Event::Resize` from the same event stream is routed to the
+/// resize watcher instead.
 #[cfg(windows)]
-fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
+fn spawn_stdin_reader() -> (Receiver<Vec<u8>>, ResizeWatcher) {
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    // `watch` keeps only the latest size, so a burst while dragging the window
+    // collapses to the final one.
+    let (size_tx, size_rx) = tokio::sync::watch::channel((0u16, 0u16));
     std::thread::spawn(move || {
         while let Ok(ev) = crossterm::event::read() {
+            if let crossterm::event::Event::Resize(cols, rows) = ev {
+                let _ = size_tx.send((cols, rows));
+                continue;
+            }
             let bytes = encode_event(ev);
             if bytes.is_empty() {
                 continue;
@@ -269,7 +296,38 @@ fn spawn_stdin_reader() -> Receiver<Vec<u8>> {
             }
         }
     });
-    rx
+    (rx, ResizeWatcher { size: size_rx })
+}
+
+/// Yields the local terminal size each time the window is resized. Never resolves if
+/// the platform source is unavailable, so its `select!` arm simply stays idle.
+struct ResizeWatcher {
+    #[cfg(unix)]
+    signal: Option<tokio::signal::unix::Signal>,
+    #[cfg(windows)]
+    size: tokio::sync::watch::Receiver<(u16, u16)>,
+}
+
+impl ResizeWatcher {
+    #[cfg(unix)]
+    async fn next(&mut self) -> (u16, u16) {
+        if let Some(signal) = &mut self.signal {
+            while signal.recv().await.is_some() {
+                if let Ok(size) = crossterm::terminal::size() {
+                    return size;
+                }
+            }
+        }
+        std::future::pending().await
+    }
+
+    #[cfg(windows)]
+    async fn next(&mut self) -> (u16, u16) {
+        if self.size.changed().await.is_ok() {
+            return *self.size.borrow_and_update();
+        }
+        std::future::pending().await
+    }
 }
 
 /// (Windows) Encode a crossterm event into the VT byte sequence to send to the
@@ -527,6 +585,14 @@ mod tests {
         async fn recv(&mut self) -> Option<Incoming> {
             None
         }
+    }
+
+    #[tokio::test]
+    async fn resize_defaults_to_a_no_op() {
+        // Serial keeps the default: a window resize must not reach the device.
+        let mut t = FakeTransport { written: Vec::new() };
+        t.resize(120, 40).await.unwrap();
+        assert!(t.written.is_empty());
     }
 
     #[test]

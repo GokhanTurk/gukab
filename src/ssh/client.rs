@@ -337,7 +337,7 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
 
     session::prepare_console();
     crossterm::terminal::enable_raw_mode()?;
-    let mut transport = SshTransport { channel: &mut channel };
+    let mut transport = SshTransport { channel: &mut channel, pty: (cols, rows) };
     let result =
         session::run_session(&mut transport, &macros, &mut compiled, log_tx.as_ref(), None).await;
     // Always restore the local terminal, even if the session errored, so the
@@ -351,6 +351,8 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
 /// messages (mapping stderr `ExtendedData` and treating exit/close as EOF).
 struct SshTransport<'a> {
     channel: &'a mut russh::Channel<russh::client::Msg>,
+    /// Size the remote PTY currently has (requested at open, then each resize sent).
+    pty: (u16, u16),
 }
 
 impl Transport for SshTransport<'_> {
@@ -372,6 +374,15 @@ impl Transport for SshTransport<'_> {
                 Some(_) => continue,
             }
         }
+    }
+
+    async fn resize(&mut self, cols: u16, rows: u16) -> Result<(), SshError> {
+        if (cols, rows) == self.pty {
+            return Ok(());
+        }
+        self.channel.window_change(cols as u32, rows as u32, 0, 0).await?;
+        self.pty = (cols, rows);
+        Ok(())
     }
 }
 

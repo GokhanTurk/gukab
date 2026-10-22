@@ -12,7 +12,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
     Terminal,
 };
 use tokio::sync::mpsc::Receiver;
@@ -261,17 +264,48 @@ fn draw(f: &mut ratatui::Frame, query: &str, list: &[Row], selected: usize, no_c
     if !items.is_empty() {
         state.select(Some(selected));
     }
+    let total = items.len();
     let list = List::new(items)
         .highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
     f.render_stateful_widget(list, rows[1], &mut state);
+
+    // More rows than fit: a scrollbar on the right border and "↑ n more" / "↓ n more"
+    // counters on the top / bottom border, so hidden entries (e.g. credentials listed
+    // after many macros) are not missed.
+    let (above, below) = overflow(total, state.offset(), rows[1].height as usize);
+    if above > 0 || below > 0 {
+        let mut bar = ScrollbarState::new(total).position(selected);
+        let track = Rect::new(popup.x, rows[1].y, popup.width, rows[1].height);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            track,
+            &mut bar,
+        );
+        let counter = Style::default().fg(Color::Yellow);
+        let edge = |y: u16| Rect::new(popup.x + 1, y, popup.width.saturating_sub(3), 1);
+        if above > 0 {
+            f.render_widget(
+                Paragraph::new(format!(" ↑ {above} more ")).style(counter).alignment(Alignment::Right),
+                edge(popup.y),
+            );
+        }
+        if below > 0 {
+            f.render_widget(
+                Paragraph::new(format!(" ↓ {below} more ")).style(counter).alignment(Alignment::Right),
+                edge(popup.y + popup.height.saturating_sub(1)),
+            );
+        }
+    }
 
     // With nothing to paste, say where passwords come from instead of the key help
     // (Ctrl+K works in the host list, not inside a session).
     let hint_text = if no_credentials {
         "no passwords yet · Ctrl+K in the host list adds one"
     } else {
-        "Enter run/paste · ↑↓ select · Esc cancel · ^D disconnect"
+        "Enter run/paste · ↑↓ · Esc cancel · ^D disconnect"
     };
     let hint = Paragraph::new(hint_text)
         .alignment(Alignment::Center)
@@ -279,10 +313,25 @@ fn draw(f: &mut ratatui::Frame, query: &str, list: &[Row], selected: usize, no_c
     f.render_widget(hint, rows[2]);
 }
 
+/// Rows hidden above and below a list of `total` rows scrolled to `offset` with
+/// `visible` rows on screen.
+fn overflow(total: usize, offset: usize, visible: usize) -> (usize, usize) {
+    let above = offset.min(total);
+    let below = total.saturating_sub(offset + visible);
+    (above, below)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn overflow_counts_hidden_rows() {
+        assert_eq!(overflow(5, 0, 12), (0, 0)); // everything fits
+        assert_eq!(overflow(20, 0, 12), (0, 8)); // top of a long list
+        assert_eq!(overflow(20, 8, 12), (8, 0)); // scrolled to the end
+        assert_eq!(overflow(20, 3, 12), (3, 5));
+    }
 
     fn mac(key: &str) -> Macro {
         Macro { key: key.into(), send: format!("{key} body"), expects: Vec::new() }
@@ -319,5 +368,40 @@ mod tests {
         let found = picks(&rows(&macros, &creds, "sudo", None));
         assert_eq!(found.first(), Some(&Pick::Paste("ubuntu24-sudo".into())));
         assert!(!found.contains(&Pick::Paste("srv-pass".into())));
+    }
+
+    fn render(list: &[Row], selected: usize) -> String {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, "", list, selected, false)).expect("draw");
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn long_list_shows_how_many_rows_are_hidden() {
+        let macros: Vec<Macro> = (0..14).map(|i| mac(&format!("m{i}"))).collect();
+        let creds = [cred("schrod", false)];
+        let list = rows(&macros, &creds, "", None);
+
+        let top = render(&list, 0);
+        assert!(top.contains("↓ 3 more"), "{top}");
+        assert_eq!(top.matches(" more ").count(), 1, "only the ↓ counter: {top}");
+        assert!(top.contains("^D disconnect"), "hint must fit: {top}");
+
+        // Selecting the last row (the credential) scrolls; the counter flips.
+        let bottom = render(&list, list.len() - 1);
+        assert!(bottom.contains("↑ 3 more") && bottom.contains("schrod"), "{bottom}");
+        assert_eq!(bottom.matches(" more ").count(), 1, "only the ↑ counter: {bottom}");
+    }
+
+    #[test]
+    fn short_list_has_no_scroll_counters() {
+        let macros = [mac("en")];
+        let out = render(&rows(&macros, &[], "", None), 0);
+        assert!(!out.contains("more"), "{out}");
     }
 }

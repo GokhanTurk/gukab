@@ -22,11 +22,11 @@ and exits the event loop; [src/tui/mod.rs](../../src/tui/mod.rs) then calls
 
 ## Full parity with SSH
 
-A console session has the `Ctrl+A` macro picker, expect rules (armed when a macro runs),
+A console session has the `Ctrl+G` macro picker, expect rules (armed when a macro runs),
 session logging, and output colorization — see [automation.md](automation.md). Only global
 macros apply (there is no host).
 
-On serial the `Ctrl+A` picker pins a **"⇅ baud rate…" entry at the top** (shown only on
+On serial the `Ctrl+G` picker pins a **"⇅ baud rate…" entry at the top** (shown only on
 the empty picker); selecting it opens a **baud chooser**
 ([src/ssh/baud_picker.rs](../../src/ssh/baud_picker.rs)) where `↑↓` picks a preset directly
 or you type a custom rate, `Enter` applies it live. No dedicated key, so nothing clashes

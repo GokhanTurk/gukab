@@ -1,6 +1,6 @@
 //! Mid-session baud-rate chooser for serial consoles.
 //!
-//! Opened from the `Ctrl+A` picker's "baud rate…" entry. A single editable value
+//! Opened from the `Ctrl+G` picker's "baud rate…" entry. A single editable value
 //! (pre-filled with the current baud) plus a preset list: `↑↓` picks a preset
 //! straight into the field, or type any custom rate. `Enter` applies, `Esc` cancels.
 //! Like the macro picker it briefly uses the alternate screen and reads from the

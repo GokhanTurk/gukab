@@ -158,10 +158,11 @@ fn serial_worker(
 
 /// Open the serial port and run an interactive console session over it, reusing
 /// the shared session engine (macros, expects, logging, colorization, and the
-/// `Ctrl+B` live baud cycle). Global macros are available via `Ctrl+A`.
+/// `Ctrl+B` live baud cycle). Global macros are available via `Ctrl+G`.
 pub async fn connect_serial(
     params: &SerialParams,
     automations: &Automations,
+    escape: session::EscapeKey,
 ) -> Result<(), SshError> {
     let port = serialport::new(&params.device, params.baud)
         .data_bits(params.data_bits_sp())
@@ -180,7 +181,7 @@ pub async fn connect_serial(
     let mut baud = SerialBaud { out: tx_out, cur: params.baud };
 
     // No host here, so only the global macros apply; a macro's expects are armed
-    // when it is run from the Ctrl+A picker (as in an SSH session).
+    // when it is run from the Ctrl+G picker (as in an SSH session).
     let macros = automations.macros.clone();
     let credentials = session::paste_credentials(None, &automations.credentials);
     let mut compiled = session::build_automations(&[], None)?;
@@ -200,6 +201,7 @@ pub async fn connect_serial(
         &mut transport,
         &macros,
         &credentials,
+        escape,
         &mut compiled,
         log_tx.as_ref(),
         Some(&mut baud),

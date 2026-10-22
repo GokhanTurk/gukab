@@ -37,14 +37,14 @@ Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
 - **Serial / console connections** — connect to a device console over a USB-serial
   adapter (`Ctrl+L` or the **＋ Console connection…** row): pick the device
   (auto-detected ports) and baud, with an Advanced section for data/parity/stop/flow;
-  change baud live from the `Ctrl+A` menu. Nothing is saved.
-- **Session automation** — keyboard macros (`Ctrl+A` fuzzy picker) and regex `expect`
+  change baud live from the `Ctrl+G` menu. Nothing is saved.
+- **Session automation** — keyboard macros (`Ctrl+G` fuzzy picker) and regex `expect`
   rules that auto-answer prompts (e.g. enable passwords). Each rule fires at most once
   per macro run — a wrong password is never retried into an account lockout. Add/edit
   macros in-app with the **macro manager** (`Ctrl+G`).
 - **Credentials in the OS keychain** — never written to config files.
 - **Paste a password on demand** — when `sudo` (or anything else) asks for a password,
-  pick it by name from the `Ctrl+A` menu: the connected host's own login password is
+  pick it by name from the `Ctrl+G` menu: the connected host's own login password is
   listed first, plus every credential saved with `Ctrl+K`. It is read from the keychain
   at that moment and typed without Enter. If no password prompt is on screen, gukab asks
   before sending, so a secret is never pasted into a shell by mistake.
@@ -125,7 +125,7 @@ Run `gukab`. The host list opens with a search box on top.
 | `Ctrl+E` | edit selected host |
 | `Ctrl+D` | delete selected host |
 | `Ctrl`/`Shift`+`↑`/`↓` | reorder a host within its group |
-| `Ctrl+K` | add a keyring credential (also listed for pasting from `Ctrl+A`) |
+| `Ctrl+K` | add a keyring credential (also listed for pasting from `Ctrl+G`) |
 | `Ctrl+G` | macro manager (add / edit / delete global macros) |
 | `Ctrl+L` | console (serial) connection form |
 | `Ctrl+O` | focus the notes panel |
@@ -136,10 +136,21 @@ you lack permission on — gukab shows the reason in a popup and returns you to 
 (`Esc` closes it), with your selection and search filter intact. A session that ran and
 then ended exits gukab, leaving its scrollback in your shell.
 
-Inside a session, `Ctrl+A` opens the fuzzy **macro picker** (`Enter` runs,
-`Esc` cancels, `Ctrl+D` disconnects, `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`).
+Inside a session, `Ctrl+G` opens the fuzzy **macro picker** (`Enter` runs,
+`Esc` cancels, `Ctrl+D` disconnects, `Ctrl+G Ctrl+G` sends a literal `Ctrl+G`).
 On a serial console the picker also offers a **baud chooser** (pick a preset or type
 a custom rate) to change speed live. `🔑` rows paste a password (no Enter is sent).
+
+`Ctrl+G` is the same key that opens the macro manager in the host list, and it leaves
+`Ctrl+A` to your shell (beginning of line — also what many macOS terminals send for
+`Cmd+←`). To use another key, set it in `~/.config/gukab/settings.toml`:
+
+```toml
+[session]
+escape_key = "ctrl-a"   # any letter or ] \ ^ _ (not C, D, H, I, J, M); default "ctrl-g"
+```
+
+Pressing the picker key again while the picker is open also sends the key itself.
 
 In the **notes panel** (`Ctrl+O`): `Enter` preview, `a` add, `e` edit (opens your
 editor), `r` rename, `d` delete, `l` change the section label, `h` hide the section,
@@ -152,7 +163,7 @@ Config lives in `~/.config/gukab/` (Windows: `%APPDATA%\gukab\`):
 - `hosts.toml` — hosts and `[[groups]]` (icons, membership).
 - `automations.toml` — reusable macros, their `expect` rules, and the names of
   pasteable credentials.
-- `settings.toml` — app preferences (notes label / visibility).
+- `settings.toml` — app preferences (notes label / visibility, in-session picker key).
 - `log/<host>/<timestamp>.log` — per-session transcripts.
 - `notes/` — panel notes, one `.md` file per note (title = file name).
 

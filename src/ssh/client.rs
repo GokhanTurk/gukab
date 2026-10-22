@@ -183,7 +183,11 @@ fn legacy_compatible_preferred() -> Preferred {
     }
 }
 
-pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshError> {
+pub async fn connect(
+    host: &Host,
+    automations: &Automations,
+    escape: session::EscapeKey,
+) -> Result<(), SshError> {
     // The keyring secret is optional: for password hosts it is the login password,
     // for key hosts it is the (possibly absent) passphrase. A key-only host with no
     // passphrase has an empty `credential_ref` and no entry — that is not an error.
@@ -280,14 +284,14 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
         )));
     }
 
-    // Macros are always available (manual via Ctrl+A / on_connect; never auto-fire).
+    // Macros are always available (manual via Ctrl+G / on_connect; never auto-fire).
     let macros: Vec<Macro> = automations
         .macros
         .iter()
         .chain(host.macros.iter())
         .cloned()
         .collect();
-    // Pasteable from the Ctrl+A picker: this host's login password (a key host's
+    // Pasteable from the Ctrl+G picker: this host's login password (a key host's
     // `credential_ref` is its key passphrase, which is never offered) and the
     // registered credential names.
     let host_password = host.identity_file.is_empty().then_some(host.credential_ref.as_str());
@@ -356,6 +360,7 @@ pub async fn connect(host: &Host, automations: &Automations) -> Result<(), SshEr
             &mut transport,
             &macros,
             &credentials,
+            escape,
             &mut compiled,
             log_tx.as_ref(),
             None,

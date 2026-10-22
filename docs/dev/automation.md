@@ -7,11 +7,12 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
 
 ## Two mechanisms on top of raw PTY passthrough
 
-- **Macros** — `Ctrl+A` is a local escape prefix (not forwarded). It opens a **fuzzy
+- **Macros** — `Ctrl+G` (configurable, see "Engine internals") is a local escape prefix
+  (not forwarded). It opens a **fuzzy
   macro picker** popup ([src/ssh/macro_picker.rs](../../src/ssh/macro_picker.rs)): a
   centered search box + the macro list, filtered with the same fuzzy matcher as the host
   list. `↑↓` select, `Enter` runs, `Esc` cancels, `Ctrl+D` disconnects the session,
-  `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`. The picker briefly uses the alternate screen
+  `Ctrl+G Ctrl+G` sends a literal `Ctrl+G`. The picker briefly uses the alternate screen
   and restores the live session after. A macro's `send` may be **multi-line** (TOML
   triple-quoted string): each non-empty line is sent as its own command terminated by
   `\r` (Enter / `^M`).
@@ -20,7 +21,7 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
   gukab auto-sends `send` (literal) or the keyring password named by `send_credential`,
   plus a newline. **Every rule is one-shot per arming**: it fires at most once, then stays
   disarmed until the macro that owns it runs again (each run — `on_connect` or manual
-  `Ctrl+A` — re-arms it for exactly one more firing, replacing any earlier copies). So a
+  `Ctrl+G` — re-arms it for exactly one more firing, replacing any earlier copies). So a
   wrong auto-sent password is never retried into an account lockout, and a rule that
   already fired never answers an unrelated later prompt (e.g. the `Password:` asked while
   creating a user). A legacy `once` field in config files is ignored. Credentials are read
@@ -51,8 +52,8 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
 ### Scoping summary
 
 - **Macros** (global in `automations.toml`, or per-host) are always available for manual
-  `Ctrl+A` use; they never auto-fire.
-- **A macro's `expects` arm each time that macro runs** (via `on_connect` or `Ctrl+A`),
+  `Ctrl+G` use; they never auto-fire.
+- **A macro's `expects` arm each time that macro runs** (via `on_connect` or `Ctrl+G`),
   for at most one firing per rule per run.
 - A host's own `[[hosts.expects]]` are armed at connect (also one firing each).
 
@@ -96,9 +97,14 @@ account=`enable1`**; the manual equivalent is
 
 `connect()` merges global + per-host lists, `build_automations()` compiles rules
 (rejecting invalid regex or rules that set both/neither of `send`/`send_credential`),
-`scan_and_respond()` matches against a rolling 8 KB buffer, and the `Ctrl+A` prompt is
-handled by `forward_stdin` / `run_macro_prompt`. The escape key is the `ESCAPE_PREFIX`
-constant (currently `0x01`).
+`scan_and_respond()` matches against a rolling 8 KB buffer, and the `Ctrl+G` prompt is
+handled by `forward_stdin` / `run_macro_prompt`. The escape key is `session::EscapeKey`,
+parsed once at startup from `[session] escape_key` in `settings.toml` (default `ctrl-g`;
+Ctrl+C/D/H/I/J/M/[ are refused, and an invalid value stops gukab with a message before
+the TUI starts). Pressing it twice — or again inside the open picker (`Pick::SendEscape`)
+— sends the key itself. The default was Ctrl+A until 2.0; it moved to Ctrl+G (the macro
+manager's key in the host list, rarely bound in shells or switch CLIs) because Ctrl+A is
+beginning-of-line in readline and macOS terminals often send it for `Cmd+←`.
 
 ## Macro manager
 

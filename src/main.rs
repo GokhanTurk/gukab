@@ -28,13 +28,14 @@ HOST LIST KEYS:
     Esc              Quit                (type)  Fuzzy-filter the list
 
 IN A SESSION:
-    Ctrl+A           Macro picker        Ctrl+A Ctrl+A   Send a literal Ctrl+A
-                     (on a serial console the picker also offers a baud chooser)
+    Ctrl+G           Macro picker        Ctrl+G Ctrl+G   Send a literal Ctrl+G
+                     (on a serial console the picker also offers a baud chooser;
+                     change the key with escape_key under [session] in settings.toml)
 
 CONFIG (~/.config/gukab/):
     hosts.toml        Hosts and groups
     automations.toml  Reusable macros and expect rules
-    settings.toml     App preferences (notes label / visibility)
+    settings.toml     App preferences (notes label / visibility, picker key)
     known_hosts       Trusted SSH host-key fingerprints
     log/<host>/       Per-session transcripts
     notes/            Panel notes (one .md file per note)

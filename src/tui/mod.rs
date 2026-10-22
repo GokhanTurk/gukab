@@ -18,6 +18,8 @@ pub enum TuiError {
     Io(#[from] std::io::Error),
     #[error("SSH error: {0}")]
     Ssh(#[from] ssh::SshError),
+    #[error("settings.toml: {0}")]
+    Settings(String),
 }
 
 pub async fn run(
@@ -26,6 +28,10 @@ pub async fn run(
     automations: Automations,
 ) -> Result<(), TuiError> {
     let settings = crate::config::load_settings().unwrap_or_default();
+    // A bad escape key is refused up front rather than silently replaced: the user
+    // would otherwise find their picker key "not working" mid-session.
+    let escape = crate::session::EscapeKey::parse(&settings.session.escape_key)
+        .map_err(TuiError::Settings)?;
     // The App outlives the terminal so that a failed connection can drop the user back
     // into the list with their selection, search filter, collapsed groups and any host
     // edits from this session still intact.
@@ -40,9 +46,9 @@ pub async fn run(
         // `app.automations` may have been edited in the macro manager this session, so
         // the connection always reads the live copy.
         let outcome = if let Some(host) = app.pending_connect.take() {
-            ssh::client::connect(&host, &app.automations).await
+            ssh::client::connect(&host, &app.automations, escape).await
         } else if let Some(params) = app.pending_serial.take() {
-            serial::client::connect_serial(&params, &app.automations).await
+            serial::client::connect_serial(&params, &app.automations, escape).await
         } else {
             break; // the user quit
         };

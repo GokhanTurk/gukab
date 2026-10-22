@@ -1,7 +1,7 @@
 //! Transport-agnostic interactive session engine.
 //!
 //! The same loop drives an SSH channel and a serial port: raw stdin passthrough,
-//! the `Ctrl+A` macro picker, regex expect rules, session logging, and output
+//! the `Ctrl+G` macro picker, regex expect rules, session logging, and output
 //! colorization. A [`Transport`] abstracts the byte pipe; SSH and serial each
 //! provide one. This is what lets the serial console reuse every SSH session
 //! feature without duplicating the loop.
@@ -33,7 +33,7 @@ pub trait Transport {
 }
 
 /// Optional live control surface for a serial session (baud switching). `None`
-/// for SSH. Surfaced as a pinned entry in the `Ctrl+A` picker (no dedicated key,
+/// for SSH. Surfaced as a pinned entry in the `Ctrl+G` picker (no dedicated key,
 /// so nothing clashes with an outer multiplexer like tmux); selecting it opens a
 /// chooser (pick a preset or type a custom rate).
 pub trait BaudControl {
@@ -43,7 +43,7 @@ pub trait BaudControl {
     fn set_baud(&mut self, baud: u32);
 }
 
-/// A keyring entry the `Ctrl+A` picker can paste. `pinned` marks the connected
+/// A keyring entry the `Ctrl+G` picker can paste. `pinned` marks the connected
 /// host's own login password, listed at the top of the empty picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasteCredential {
@@ -137,9 +137,51 @@ impl PromptTail {
     }
 }
 
-/// Local escape prefix (Ctrl+A) that opens the gukab macro prompt instead of
-/// being forwarded. Pressing it twice sends a literal Ctrl+A.
-pub const ESCAPE_PREFIX: u8 = 0x01;
+/// The local escape key that opens the macro picker instead of being forwarded
+/// (`[session] escape_key` in `settings.toml`, default Ctrl+G). Pressing it twice —
+/// or again while the picker is open — sends the key itself to the remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EscapeKey(u8);
+
+impl EscapeKey {
+    pub const DEFAULT: Self = Self(0x07);
+
+    /// Parse `ctrl-<key>` (or `ctrl+<key>`, any case) for a letter or one of
+    /// `] \ ^ _`. Keys the terminal or shell already gives a meaning that can't be
+    /// given up — Ctrl+C/D/H/I/J/M and Ctrl+[ (Esc) — are refused.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        let lower = name.trim().to_ascii_lowercase();
+        let key = lower
+            .strip_prefix("ctrl-")
+            .or_else(|| lower.strip_prefix("ctrl+"))
+            .and_then(|k| {
+                let mut chars = k.chars();
+                chars.next().filter(|_| chars.next().is_none())
+            });
+        let valid = "write it as ctrl-<key>: a letter or ] \\ ^ _";
+        let Some(c) = key else {
+            return Err(format!("escape_key = \"{name}\": {valid}"));
+        };
+        match c {
+            'c' | 'd' | 'h' | 'i' | 'j' | 'm' => Err(format!(
+                "escape_key = \"{name}\": Ctrl+{} is reserved by the terminal (interrupt, \
+                 EOF, Backspace, Tab, Enter); pick another key",
+                c.to_ascii_uppercase()
+            )),
+            'a'..='z' | ']' | '\\' | '^' | '_' => Ok(Self(c.to_ascii_uppercase() as u8 & 0x1f)),
+            _ => Err(format!("escape_key = \"{name}\": {valid}")),
+        }
+    }
+
+    pub fn byte(self) -> u8 {
+        self.0
+    }
+
+    /// Human-readable form for hints and messages, e.g. `Ctrl+A`, `Ctrl+]`.
+    pub fn label(self) -> String {
+        format!("Ctrl+{}", (self.0 | 0x40) as char)
+    }
+}
 /// Cap for the rolling output buffer scanned by expect rules.
 const SCAN_BUFFER_CAP: usize = 8 * 1024;
 
@@ -261,6 +303,7 @@ pub async fn run_session<T: Transport>(
     transport: &mut T,
     macros: &[Macro],
     credentials: &[PasteCredential],
+    escape: EscapeKey,
     automations: &mut Vec<Automation>,
     log_tx: Option<&UnboundedSender<Vec<u8>>>,
     mut baud: Option<&mut dyn BaudControl>,
@@ -322,7 +365,7 @@ pub async fn run_session<T: Transport>(
                             Some(b) => Some(&mut **b),
                             None => None,
                         };
-                        let ctx = PickerContext { macros, credentials, prompt: &prompt };
+                        let ctx = PickerContext { macros, credentials, escape, prompt: &prompt };
                         if !forward_stdin(&bytes, &ctx, transport, automations, &mut rx, baud_ref)
                             .await?
                         {
@@ -595,14 +638,15 @@ async fn scan_and_respond<T: Transport>(
     Ok(())
 }
 
-/// Forward typed bytes to the transport, intercepting the Ctrl+A escape prefix
+/// Forward typed bytes to the transport, intercepting the Ctrl+G escape prefix
 /// (macro prompt, which on serial also offers "cycle baud"). Returns `Ok(false)`
 /// if the session should end.
-/// What the `Ctrl+A` picker offers, plus the output line used to check for a
+/// What the `Ctrl+G` picker offers, plus the output line used to check for a
 /// password prompt before pasting.
 struct PickerContext<'a> {
     macros: &'a [Macro],
     credentials: &'a [PasteCredential],
+    escape: EscapeKey,
     prompt: &'a PromptTail,
 }
 
@@ -615,7 +659,8 @@ async fn forward_stdin<T: Transport>(
     baud: Option<&mut dyn BaudControl>,
 ) -> Result<bool, SshError> {
     // Pass straight through unless the escape prefix is present.
-    let Some(pos) = bytes.iter().position(|&b| b == ESCAPE_PREFIX) else {
+    let esc = ctx.escape.byte();
+    let Some(pos) = bytes.iter().position(|&b| b == esc) else {
         transport.write(bytes).await?;
         return Ok(true);
     };
@@ -625,10 +670,12 @@ async fn forward_stdin<T: Transport>(
         transport.write(&bytes[..pos]).await?;
     }
 
-    // Ctrl+A Ctrl+A sends a literal Ctrl+A.
+    // The escape key twice sends the key itself (e.g. Ctrl+G Ctrl+G → Ctrl+G).
     let rest = &bytes[pos + 1..];
-    if let Some((&ESCAPE_PREFIX, tail)) = rest.split_first() {
-        transport.write(&[ESCAPE_PREFIX][..]).await?;
+    if let Some((&b, tail)) = rest.split_first()
+        && b == esc
+    {
+        transport.write(&[esc][..]).await?;
         if !tail.is_empty() {
             transport.write(tail).await?;
         }
@@ -639,7 +686,15 @@ async fn forward_stdin<T: Transport>(
     // showing the current baud. Any bytes after the prefix seed the query.
     let baud_now = baud.as_ref().map(|b| b.current());
     let macros = ctx.macros;
-    match crate::ssh::macro_picker::pick(macros, ctx.credentials, rx, rest, baud_now).await {
+    match crate::ssh::macro_picker::pick(macros, ctx.credentials, ctx.escape, rx, rest, baud_now)
+        .await
+    {
+        // The escape key again inside the picker: close it and send the key itself,
+        // so the key itself stays reachable.
+        crate::ssh::macro_picker::Pick::SendEscape => {
+            transport.write(&[esc][..]).await?;
+            Ok(true)
+        }
         crate::ssh::macro_picker::Pick::Baud => {
             // Open the baud chooser (pick a preset or type a custom rate).
             if let Some(ctl) = baud
@@ -795,6 +850,51 @@ mod tests {
             tx.send(answer.to_vec()).await.unwrap();
             assert!(!confirm_paste("srv", &mut rx).await, "{answer:?} must cancel");
         }
+    }
+
+    #[test]
+    fn escape_key_parses_ctrl_letters_and_punctuation() {
+        for (name, byte, label) in [
+            ("ctrl-a", 0x01, "Ctrl+A"),
+            ("Ctrl+]", 0x1d, "Ctrl+]"),
+            ("CTRL-B", 0x02, "Ctrl+B"),
+            ("ctrl-\\", 0x1c, "Ctrl+\\"),
+            (" ctrl-_ ", 0x1f, "Ctrl+_"),
+        ] {
+            let key = EscapeKey::parse(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((key.byte(), key.label().as_str()), (byte, label), "{name}");
+        }
+        assert_eq!(EscapeKey::parse("ctrl-g"), Ok(EscapeKey::DEFAULT));
+    }
+
+    #[test]
+    fn escape_key_refuses_reserved_and_malformed_names() {
+        for name in ["ctrl-c", "ctrl-d", "ctrl-m", "ctrl-[", "ctrl-1", "alt-a", "ctrl-ab", "a", ""] {
+            assert!(EscapeKey::parse(name).is_err(), "{name} must be refused");
+        }
+        assert!(EscapeKey::parse("ctrl-c").unwrap_err().contains("reserved"));
+    }
+
+    async fn forward(bytes: &[u8], escape: EscapeKey) -> Vec<u8> {
+        let mut t = FakeTransport { written: Vec::new() };
+        let prompt = PromptTail::default();
+        let ctx = PickerContext { macros: &[], credentials: &[], escape, prompt: &prompt };
+        let (_tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let mut autos = Vec::new();
+        assert!(forward_stdin(bytes, &ctx, &mut t, &mut autos, &mut rx, None).await.unwrap());
+        t.written
+    }
+
+    #[tokio::test]
+    async fn only_the_escape_key_is_intercepted() {
+        // Default Ctrl+G: Ctrl+A (beginning of line; Cmd+← in many macOS terminals)
+        // reaches the shell untouched, and Ctrl+G Ctrl+G sends one Ctrl+G.
+        assert_eq!(forward(b"\x01ls", EscapeKey::DEFAULT).await, b"\x01ls");
+        assert_eq!(forward(b"\x07\x07", EscapeKey::DEFAULT).await, b"\x07");
+        // A user who sets "ctrl-a" gets the pre-2.0 behavior: Ctrl+G passes through.
+        let ctrl_a = EscapeKey::parse("ctrl-a").unwrap();
+        assert_eq!(forward(b"\x07", ctrl_a).await, b"\x07");
+        assert_eq!(forward(b"\x01\x01", ctrl_a).await, b"\x01");
     }
 
     #[tokio::test]

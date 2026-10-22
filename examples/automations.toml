@@ -1,7 +1,7 @@
 # Example gukab automations.
 # Copy to ~/.config/gukab/automations.toml and edit.
 #
-# These macros are available in EVERY session via the Ctrl+A macro picker.
+# These macros are available in EVERY session via the Ctrl+G macro picker.
 # A macro's `expects` arm only when the macro is run via a host's `on_connect`
 # (see hosts.toml) — they never fire globally on their own.
 
@@ -32,7 +32,7 @@ end
 key = "wr"
 send = "write memory"
 
-# Credentials offered for manual pasting from the in-session Ctrl+A picker (e.g. when
+# Credentials offered for manual pasting from the in-session Ctrl+G picker (e.g. when
 # sudo asks for a password). Only the keychain entry NAME is stored here — Ctrl+K saves
 # the secret and adds its name automatically. Nothing is sent without you picking it,
 # and no Enter is sent after it.

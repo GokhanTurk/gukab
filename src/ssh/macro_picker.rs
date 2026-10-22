@@ -1,6 +1,6 @@
 //! Mid-session fuzzy macro picker.
 //!
-//! Opened from the `Ctrl+A` escape prefix during an SSH session. It briefly
+//! Opened from the `Ctrl+G` escape prefix during an SSH session. It briefly
 //! switches to the alternate screen, draws a small centered ratatui popup
 //! (search box + fuzzy-filtered macro list), then restores the live session
 //! screen. Input comes from the same stdin mpsc channel the io_loop uses.
@@ -22,7 +22,7 @@ use tokio::sync::mpsc::Receiver;
 
 use crate::config::Macro;
 use crate::fuzzy::fuzzy_score;
-use crate::session::PasteCredential;
+use crate::session::{EscapeKey, PasteCredential};
 
 /// Outcome of the picker.
 #[derive(Debug, PartialEq)]
@@ -31,6 +31,8 @@ pub enum Pick {
     Run(String),
     /// Paste the keyring secret with this reference (no Enter is sent).
     Paste(String),
+    /// The escape key was pressed again: close and send the key itself.
+    SendEscape,
     /// Open the baud chooser (serial sessions only — the pinned top entry).
     Baud,
     /// Close the picker, keep the session.
@@ -67,6 +69,7 @@ impl Row<'_> {
 pub async fn pick(
     macros: &[Macro],
     credentials: &[PasteCredential],
+    escape: EscapeKey,
     rx: &mut Receiver<Vec<u8>>,
     seed: &[u8],
     baud_now: Option<u32>,
@@ -79,7 +82,7 @@ pub async fn pick(
         let _ = out.flush();
     }
 
-    let result = run(macros, credentials, rx, seed, baud_now).await;
+    let result = run(macros, credentials, escape, rx, seed, baud_now).await;
 
     {
         let mut out = std::io::stdout();
@@ -92,6 +95,7 @@ pub async fn pick(
 async fn run(
     macros: &[Macro],
     credentials: &[PasteCredential],
+    escape: EscapeKey,
     rx: &mut Receiver<Vec<u8>>,
     seed: &[u8],
     baud_now: Option<u32>,
@@ -137,6 +141,7 @@ async fn run(
 
         for &b in &chunk {
             match b {
+                b if b == escape.byte() => return Pick::SendEscape,
                 0x04 => return Pick::Disconnect, // Ctrl+D
                 b'\r' | b'\n' => {
                     let list = rows(macros, credentials, &query, baud_now);

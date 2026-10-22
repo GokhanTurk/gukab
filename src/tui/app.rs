@@ -1395,7 +1395,7 @@ impl App {
                 }
                 match write_credential(&reference, &password) {
                     Ok(()) => {
-                        // List the name (never the secret) so the in-session Ctrl+A
+                        // List the name (never the secret) so the in-session Ctrl+G
                         // picker can offer it for pasting.
                         let status = if !self.automations.register_credential(&reference) {
                             format!("Credential saved (ref: {reference})")
@@ -1403,7 +1403,12 @@ impl App {
                         {
                             format!("Credential saved, but listing it failed: {e}")
                         } else {
-                            format!("Credential saved (ref: {reference}) · pasteable via Ctrl+A")
+                            let key = crate::session::EscapeKey::parse(
+                                &self.settings.session.escape_key,
+                            )
+                            .unwrap_or(crate::session::EscapeKey::DEFAULT)
+                            .label();
+                            format!("Credential saved (ref: {reference}) · pasteable via {key}")
                         };
                         self.set_status(status);
                         self.mode = AppMode::Normal;

@@ -22,7 +22,7 @@ pub struct Host {
     /// Group this host belongs to (matches a `[[groups]]` name); `None` = ungrouped.
     #[serde(default)]
     pub group: Option<String>,
-    /// Named command shortcuts fired via the Ctrl+A escape prefix during a session.
+    /// Named command shortcuts fired via the Ctrl+G escape prefix during a session.
     #[serde(default)]
     pub macros: Vec<Macro>,
     /// Regex-triggered auto-responses scanned against the session output stream.
@@ -95,7 +95,7 @@ pub struct Group {
 pub struct Automations {
     #[serde(default)]
     pub macros: Vec<Macro>,
-    /// Keyring entries offered for manual pasting from the in-session `Ctrl+A` picker
+    /// Keyring entries offered for manual pasting from the in-session `Ctrl+G` picker
     /// (e.g. a sudo password). Names only — the secrets stay in the OS keychain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credentials: Vec<CredentialName>,
@@ -127,6 +127,28 @@ impl Automations {
 pub struct Settings {
     #[serde(default)]
     pub notes: NotesSettings,
+    #[serde(default)]
+    pub session: SessionSettings,
+}
+
+/// In-session behavior (`[session]` in `settings.toml`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSettings {
+    /// Key that opens the macro picker: `"ctrl-g"` by default (Ctrl+A stays free for
+    /// beginning-of-line / Cmd+← on macOS); `"ctrl-a"` restores the pre-2.0 key.
+    /// Parsed by `session::EscapeKey::parse`.
+    #[serde(default = "default_escape_key")]
+    pub escape_key: String,
+}
+
+impl Default for SessionSettings {
+    fn default() -> Self {
+        Self { escape_key: default_escape_key() }
+    }
+}
+
+fn default_escape_key() -> String {
+    "ctrl-g".to_string()
 }
 
 /// Preferences for the notes section of the right-hand panel.
@@ -359,6 +381,14 @@ mod settings_tests {
         // An empty file yields the defaults; a custom label + hidden round-trips.
         let empty: Settings = toml::from_str("").expect("empty settings parse");
         assert_eq!(empty.notes.label, "Notes");
+        assert_eq!(empty.session.escape_key, "ctrl-g");
+
+        // A pre-[session] file keeps working; an explicit key is read.
+        let old: Settings = toml::from_str("[notes]\nlabel = \"X\"\n").expect("old file");
+        assert_eq!(old.session.escape_key, "ctrl-g");
+        let custom: Settings =
+            toml::from_str("[session]\nescape_key = \"ctrl-]\"\n").expect("custom key");
+        assert_eq!(custom.session.escape_key, "ctrl-]");
 
         let mut s = Settings::default();
         s.notes.label = "Notlar".into();

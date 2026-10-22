@@ -34,9 +34,3 @@ config/credentials.toml
 # Env dosyaları
 .env
 .env.local
-
-# Claude Code - kişisel/yerel dosyalar (paylaşılmaz)
-.claude/settings.local.json
-.claude/agent-memory/
-# Local AI tooling config — not part of the project
-.claude/

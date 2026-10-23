@@ -41,7 +41,10 @@ pub enum Pick {
     Disconnect,
 }
 
-const ENTER_ALT: &[u8] = b"\x1b[?1049h";
+// Reset SGR after switching: the remote (e.g. nvim mid-redraw) may have left an
+// attribute such as undercurl set, and ratatui assumes a clean pen. Leaving the
+// alternate screen restores the remote's cursor and attributes.
+const ENTER_ALT: &[u8] = b"\x1b[?1049h\x1b[0m";
 const LEAVE_ALT: &[u8] = b"\x1b[?1049l";
 
 /// One selectable line of the picker.

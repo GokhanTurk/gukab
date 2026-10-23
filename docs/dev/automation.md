@@ -102,7 +102,10 @@ handled by `forward_stdin` / `run_macro_prompt`. The escape key is `session::Esc
 parsed once at startup from `[session] escape_key` in `settings.toml` (default `ctrl-g`;
 Ctrl+C/D/H/I/J/M/[ are refused, and an invalid value stops gukab with a message before
 the TUI starts). Pressing it twice — or again inside the open picker (`Pick::SendEscape`)
-— sends the key itself. The default was Ctrl+A until 2.0; it moved to Ctrl+G (the macro
+— sends the key itself. `KeyScanner` skips terminal reply strings on stdin
+(`ESC ] … BEL`, DCS/APC/PM/SOS): nvim and others query the terminal (OSC 11
+background color) and the BEL ending the reply is byte-identical to Ctrl+G, so without
+it the reply opened the picker and leaked `[0n` into the search box. The default was Ctrl+A until 2.0; it moved to Ctrl+G (the macro
 manager's key in the host list, rarely bound in shells or switch CLIs) because Ctrl+A is
 beginning-of-line in readline and macOS terminals often send it for `Cmd+←`.
 

@@ -3,6 +3,17 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [2.0.1] - 2026-10-23
+
+### Fixed
+- **The picker no longer opens by itself in nvim (and other full-screen programs).**
+  nvim asks the terminal for its background color, and the reply ends with a BEL byte —
+  the same byte as `Ctrl+G`. gukab took that as the picker key, opened the menu and put
+  `[0n` in the search box. Terminal replies now pass through to the remote untouched;
+  only a `Ctrl+G` you type opens the picker.
+- **No wavy underline on the picker.** A text style the remote program left switched on
+  (e.g. nvim's undercurl) no longer bleeds into the popup's borders and text.
+
 ## [2.0.0] - 2026-10-22
 
 ### Breaking

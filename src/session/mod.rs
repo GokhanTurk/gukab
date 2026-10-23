@@ -137,6 +137,57 @@ impl PromptTail {
     }
 }
 
+/// Finds the escape key in typed input while skipping terminal replies. Programs
+/// like nvim query the terminal (OSC 11 background color, …) and the reply arrives
+/// on stdin as `ESC ] … BEL` — that BEL is Ctrl+G, the default escape key, and must
+/// reach the remote instead of opening the picker. State carries across reads, as
+/// a reply may be split between two of them.
+#[derive(Default)]
+struct KeyScanner {
+    state: KeyState,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum KeyState {
+    #[default]
+    Text,
+    Esc,
+    /// OSC / DCS / APC / PM / SOS string: ends with BEL or ST (`ESC \`).
+    Str,
+    StrEsc,
+}
+
+impl KeyScanner {
+    /// Index of the first escape key typed outside a terminal reply string, or
+    /// `None` (state advanced over all of `bytes`). Bytes after the returned index
+    /// are not scanned — the caller hands them to the picker.
+    fn find(&mut self, bytes: &[u8], esc: u8) -> Option<usize> {
+        for (i, &b) in bytes.iter().enumerate() {
+            self.state = match (self.state, b) {
+                (KeyState::Str, 0x07) => KeyState::Text,
+                (KeyState::Str, 0x1b) => KeyState::StrEsc,
+                (KeyState::Str, _) => KeyState::Str,
+                // An ESC that isn't ST aborts the string and starts a new sequence
+                // (so a stray `Alt+]` can't swallow input for long).
+                (KeyState::StrEsc, b'\\') => KeyState::Text,
+                (KeyState::Esc | KeyState::StrEsc, b']' | b'P' | b'_' | b'^' | b'X') => {
+                    KeyState::Str
+                }
+                (KeyState::StrEsc, 0x1b) => KeyState::Esc,
+                (KeyState::Esc, 0x1b) => KeyState::Esc,
+                // Outside a string the key is the user's, even right after an Esc.
+                (_, b) if b == esc => {
+                    self.state = KeyState::Text;
+                    return Some(i);
+                }
+                (_, 0x1b) => KeyState::Esc,
+                _ => KeyState::Text,
+            };
+        }
+        None
+    }
+}
+
 /// The local escape key that opens the macro picker instead of being forwarded
 /// (`[session] escape_key` in `settings.toml`, default Ctrl+G). Pressing it twice —
 /// or again while the picker is open — sends the key itself to the remote.
@@ -312,6 +363,7 @@ pub async fn run_session<T: Transport>(
     let mut scan_buf = String::new();
     let mut hl = crate::ssh::highlight::Highlighter::new();
     let mut prompt = PromptTail::default();
+    let mut keys = KeyScanner::default();
 
     // Read raw stdin on a dedicated OS thread and forward bytes over an mpsc
     // channel; a plain blocking read delivers each keystroke immediately, unlike
@@ -366,8 +418,10 @@ pub async fn run_session<T: Transport>(
                             None => None,
                         };
                         let ctx = PickerContext { macros, credentials, escape, prompt: &prompt };
-                        if !forward_stdin(&bytes, &ctx, transport, automations, &mut rx, baud_ref)
-                            .await?
+                        if !forward_stdin(
+                            &bytes, &mut keys, &ctx, transport, automations, &mut rx, baud_ref,
+                        )
+                        .await?
                         {
                             break;
                         }
@@ -652,15 +706,17 @@ struct PickerContext<'a> {
 
 async fn forward_stdin<T: Transport>(
     bytes: &[u8],
+    keys: &mut KeyScanner,
     ctx: &PickerContext<'_>,
     transport: &mut T,
     automations: &mut Vec<Automation>,
     rx: &mut Receiver<Vec<u8>>,
     baud: Option<&mut dyn BaudControl>,
 ) -> Result<bool, SshError> {
-    // Pass straight through unless the escape prefix is present.
+    // Pass straight through unless the escape prefix was typed (a BEL ending a
+    // terminal reply doesn't count).
     let esc = ctx.escape.byte();
-    let Some(pos) = bytes.iter().position(|&b| b == esc) else {
+    let Some(pos) = keys.find(bytes, esc) else {
         transport.write(bytes).await?;
         return Ok(true);
     };
@@ -881,8 +937,42 @@ mod tests {
         let ctx = PickerContext { macros: &[], credentials: &[], escape, prompt: &prompt };
         let (_tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
         let mut autos = Vec::new();
-        assert!(forward_stdin(bytes, &ctx, &mut t, &mut autos, &mut rx, None).await.unwrap());
+        let mut keys = KeyScanner::default();
+        assert!(
+            forward_stdin(bytes, &mut keys, &ctx, &mut t, &mut autos, &mut rx, None)
+                .await
+                .unwrap()
+        );
         t.written
+    }
+
+    #[tokio::test]
+    async fn terminal_replies_ending_in_bel_pass_through() {
+        // nvim under tmux: OSC 11 background reply (BEL-terminated) + DSR reply.
+        let reply = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07\x1b[0n";
+        assert_eq!(forward(reply, EscapeKey::DEFAULT).await, reply);
+        // ST-terminated, then a typed Ctrl+G Ctrl+G still sends one Ctrl+G.
+        assert_eq!(
+            forward(b"\x1bP1+r544e\x1b\\\x07\x07", EscapeKey::DEFAULT).await,
+            b"\x1bP1+r544e\x1b\\\x07"
+        );
+    }
+
+    #[test]
+    fn key_scanner_tracks_replies_across_reads() {
+        let mut k = KeyScanner::default();
+        // A reply split between two reads.
+        assert_eq!(k.find(b"\x1b]11;rgb:00", 0x07), None);
+        assert_eq!(k.find(b"/00/00\x07", 0x07), None);
+        // Next read: a real keypress.
+        assert_eq!(k.find(b"\x07", 0x07), Some(0));
+        // A lone Esc (vim) followed later by the key.
+        assert_eq!(k.find(b"\x1b", 0x07), None);
+        assert_eq!(k.find(b"x\x07", 0x07), Some(1));
+        // A stray Alt+] is aborted by the next escape sequence (an arrow key).
+        assert_eq!(k.find(b"\x1b]", 0x07), None);
+        assert_eq!(k.find(b"\x1b[A", 0x07), None);
+        assert_eq!(k.find(b"\x07", 0x07), Some(0));
     }
 
     #[tokio::test]

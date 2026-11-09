@@ -29,3 +29,8 @@ install-path = "~/.local/bin"
 # enumeration; the CI runner needs the dev package or the Linux build fails.
 [dist.dependencies.apt]
 libudev-dev = '*'
+
+# GitHub retired the macos-14 runner that dist 0.32.0 picks for Apple Silicon
+# (v2.0.2: "The configuration 'macos-14-arm64-us-default' is not supported").
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

@@ -3,6 +3,16 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [2.0.2] - 2026-11-09
+
+### Security
+- **Dependency updates for two timing side-channel advisories.** `crypto-bigint`
+  0.7.5 → 0.7.11 ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387))
+  and `ctutils` 0.4.3 → 0.4.8
+  ([RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385)): operations
+  meant to run in constant time could take data-dependent time. Both come in through
+  the SSH stack (`russh` / `ssh-key`). No behavior change.
+
 ## [2.0.1] - 2026-10-23
 
 ### Fixed

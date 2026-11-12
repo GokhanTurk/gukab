@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Security
+- **`russh` 0.64.1 → 0.65.1** for
+  [RUSTSEC-2026-0495](https://rustsec.org/advisories/RUSTSEC-2026-0495): russh's SSH
+  agent server signed with confirm-constrained keys without asking for confirmation.
+  gukab does not run an agent server, so it was not exposed; the update clears the
+  advisory. `ssh-key` stays at `0.7.0-rc.11` (the version russh 0.65.1 uses).
+
 ### Changed
 - **Session logs are now readable plain text.** Logs used to be the raw terminal
   stream, so Linux sessions were full of color codes, systemd `OSC 3008` markers and

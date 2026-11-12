@@ -1,5 +1,6 @@
 mod config;
 mod fuzzy;
+mod logclean;
 #[cfg(target_os = "macos")]
 mod macos_trust;
 mod notes;
@@ -15,6 +16,9 @@ USAGE:
     gukab               Launch the interactive host list
     gukab -h            Show this help
     gukab -V            Show the version
+    gukab --clean-log <PATH> Convert raw session logs from older versions into
+                             readable <name>.clean.log copies (a file, or every
+                             .log under a folder, e.g. ~/.config/gukab/log)
     gukab --trust-keychain   (macOS) Sign the binary with a local identity so the
                              keychain stops re-prompting after updates — run once
                              after each update, then click 'Always Allow' once
@@ -54,6 +58,10 @@ async fn main() {
         println!("gukab {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    if args.first().is_some_and(|a| a == "--clean-log") {
+        clean_log(&args[1..]);
+        return;
+    }
     if args.iter().any(|a| a == "--trust-keychain") {
         trust_keychain();
         return;
@@ -67,6 +75,31 @@ async fn main() {
     let automations = config::load_automations().unwrap_or_default();
     if let Err(e) = tui::run(hosts, groups, automations).await {
         eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// `--clean-log <PATH>…`: write readable `.clean.log` copies of raw session logs.
+fn clean_log(paths: &[String]) {
+    if paths.is_empty() {
+        eprintln!("gukab: --clean-log needs a file or folder\nTry 'gukab --help'.");
+        std::process::exit(2);
+    }
+    let mut failed = false;
+    for p in paths {
+        let path = config::expand_tilde(p);
+        match logclean::convert_path(&path) {
+            Ok(written) if written.is_empty() => {
+                println!("{}: nothing to convert", path.display());
+            }
+            Ok(written) => written.iter().for_each(|w| println!("{}", w.display())),
+            Err(e) => {
+                eprintln!("gukab: {}: {e}", path.display());
+                failed = true;
+            }
+        }
+    }
+    if failed {
         std::process::exit(1);
     }
 }

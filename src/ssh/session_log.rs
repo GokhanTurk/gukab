@@ -2,7 +2,9 @@
 //!
 //! The interactive loop never touches the disk: it sends output chunks to an
 //! unbounded channel, and a dedicated OS thread owns the file and writes them.
-//! This keeps typing/echo latency unaffected even on slow storage.
+//! This keeps typing/echo latency unaffected even on slow storage. The thread also
+//! runs the raw stream through [`LogCleaner`], so the file is a readable plain-text
+//! transcript (no escape codes, readline edits resolved) — see `crate::logclean`.
 
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -11,6 +13,7 @@ use chrono::Local;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::config::log_dir;
+use crate::logclean::{CLEAN_MARK, LogCleaner};
 
 /// Start logging this session's remote output. Returns a sender the caller pushes
 /// output chunks into; dropping it flushes and closes the log. Returns `None`
@@ -47,7 +50,7 @@ pub fn start(label: &str) -> Option<UnboundedSender<Vec<u8>>> {
     let mut writer = BufWriter::new(file);
     let _ = writeln!(
         writer,
-        "==== gukab session {} — {} ====",
+        "==== gukab session {} — {} ==== {CLEAN_MARK}",
         now.format("%Y-%m-%d %H:%M:%S"),
         label
     );
@@ -57,17 +60,21 @@ pub fn start(label: &str) -> Option<UnboundedSender<Vec<u8>>> {
     std::thread::spawn(move || {
         // Drain-then-flush: write the first chunk, sweep up anything already queued,
         // then flush once per burst so disk syscalls are batched off the hot path.
+        let mut cleaner = LogCleaner::new();
+        let stamp = || Local::now().format("%H:%M:%S").to_string();
         while let Some(chunk) = rx.blocking_recv() {
-            if writer.write_all(&chunk).is_err() {
-                break;
-            }
+            let t = stamp();
+            let mut text = cleaner.feed(&chunk, Some(&t));
             while let Ok(more) = rx.try_recv() {
-                if writer.write_all(&more).is_err() {
-                    return;
-                }
+                text.push_str(&cleaner.feed(&more, Some(&t)));
+            }
+            if writer.write_all(text.as_bytes()).is_err() {
+                return;
             }
             let _ = writer.flush();
         }
+        // Session over: write the unfinished last line (typically the final prompt).
+        let _ = writer.write_all(cleaner.finish(Some(&stamp())).as_bytes());
         let _ = writer.flush();
     });
 

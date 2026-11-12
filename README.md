@@ -48,7 +48,12 @@ Targets Arch Linux x86_64, Windows 10/11 (Windows Terminal), and macOS
   listed first, plus every credential saved with `Ctrl+K`. It is read from the keychain
   at that moment and typed without Enter. If no password prompt is on screen, gukab asks
   before sending, so a secret is never pasted into a shell by mistake.
-- **Session logging** — every session transcript saved per host/device.
+- **Session logging** — every session transcript saved per host/device as clean,
+  readable text: no color or control codes, line edits (Backspace, ↑ history, Tab)
+  resolved to the command actually run, full-screen programs (nano, vim, htop) reduced
+  to one marker line, and — on servers with systemd 258+ (e.g. Ubuntu 26.04) — a time +
+  working-directory header per command and `[exit N]` after failures. Convert logs
+  from older versions with `gukab --clean-log ~/.config/gukab/log`.
 - **Notes panel** — quick notes under the switch art (`Ctrl+O`): add, preview, rename,
   delete; edited in your own editor (`$EDITOR`/nano/vim on Linux and macOS, Notepad on
   Windows). Plain `.md` files in `~/.config/gukab/notes/`, so they're yours to grep and
@@ -164,7 +169,7 @@ Config lives in `~/.config/gukab/` (Windows: `%APPDATA%\gukab\`):
 - `automations.toml` — reusable macros, their `expect` rules, and the names of
   pasteable credentials.
 - `settings.toml` — app preferences (notes label / visibility, in-session picker key).
-- `log/<host>/<timestamp>.log` — per-session transcripts.
+- `log/<host>/<timestamp>.log` — per-session transcripts (clean plain text).
 - `notes/` — panel notes, one `.md` file per note (title = file name).
 
 Credentials (passwords) are stored in the OS keychain via the `keyring` crate,

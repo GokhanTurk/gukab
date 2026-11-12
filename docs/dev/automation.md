@@ -126,9 +126,45 @@ directly; `Ctrl+K` only adds credentials.
 
 Every session's remote output is logged to
 `~/.config/gukab/log/<host>/<YYYY-MM-DD_HH-MM-SS>.log` (folder per host, file per session;
-host name sanitized to `[A-Za-z0-9._-]`, falling back to `hostname`). The log is a raw
-transcript (like `script(1)`): commands echoed by the remote plus their output. Passwords
-typed at prompts are not captured because the remote does not echo them.
+host name sanitized to `[A-Za-z0-9._-]`, falling back to `hostname`). The log is a
+**cleaned plain-text** transcript: commands echoed by the remote plus their output, with
+no escape codes. Passwords typed at prompts are not captured because the remote does not
+echo them. gukab logs the remote *echo*, not keystrokes — Tab completion and history are
+done server-side, so the echo is the only source of the command as actually run.
+
+### Cleaning (`src/logclean.rs`)
+
+`LogCleaner` emulates **one terminal line**: the current line as `Vec<char>` plus the
+cursor column, fed by a byte-level ESC/CSI/OSC/DCS state machine. Stripping codes alone
+is not enough — readline's edit redraws would leave wrong commands
+(`scp a@10\b\e[K\b\e[Kmon…` → `scp a@10mon…`), so the edits are applied:
+
+- Applied: `\b`, `\r`, `\t` (8-col stops), CSI `C`/`a`/`D`/`G`/`H` (column only),
+  `K` 0/1/2, `@` (insert), `P` (delete), `X`, `J` ≥2 (clear screen drops the line;
+  the shell redraws its prompt).
+- Ignored: SGR colors, modes (`?2004` paste, `?25` cursor), window ops, OSC 0/2 titles,
+  DCS/APC strings, charset selects, BEL. UTF-8 split across chunks is reassembled.
+- `\n` commits the line, trailing blanks trimmed. A line that showed text and was then
+  erased to blank (Cisco `--More--`) is dropped.
+- Alternate screen (`?1049`/`?47`/`?1047` h…l): everything in between is discarded and
+  replaced with one `[full-screen program HH:MM:SS – HH:MM:SS]` line.
+- systemd **OSC 3008** context markers (Ubuntu 26.04+): at `type=shell` start the
+  following committed lines (prompt + echoed command) are *held*; at `type=command`
+  start a `── HH:MM:SS  <cwd> ──` header is written above them. A new shell start with
+  no command (empty Enter, Ctrl+C) flushes them unannotated. `end=<id>` of a known
+  command writes `[exit N]` / `[signal SIG]` unless `exit=success`. machineid/bootid/
+  pid are never written.
+- Known limit: editing a command longer than the terminal width (readline uses
+  `CSI A`) is not followed by the one-line model.
+
+The cleaner runs in the writer thread (one per session), stamping headers with the
+chunk's local time. The file's first line ends with `(clean)` (`logclean::CLEAN_MARK`).
+
+`gukab --clean-log <PATH>…` (`logclean::convert_path`) converts raw logs from older
+versions: a file, or every `*.log` under a folder recursively, written as
+`<name>.clean.log` beside the original (0600; originals untouched). Files already
+marked `(clean)` and `*.clean.log` are skipped. Offline there are no real times, so
+headers carry only the cwd.
 
 Implemented in [src/ssh/session_log.rs](../../src/ssh/session_log.rs):
 `session_log::start(label)` (the label is the host name/hostname for SSH, the device

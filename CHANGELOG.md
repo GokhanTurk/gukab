@@ -3,6 +3,24 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+- **Session logs are now readable plain text.** Logs used to be the raw terminal
+  stream, so Linux sessions were full of color codes, systemd `OSC 3008` markers and
+  readline redraw sequences — and a command fixed with Backspace or recalled with ↑
+  showed up garbled or wrong. The log writer now resolves line editing to the command
+  actually run, drops every escape code, reduces full-screen programs (nano, vim, less,
+  htop) to a single `[full-screen program …]` line, and drops Cisco `--More--` prompts.
+  On servers that emit systemd `OSC 3008` markers (Ubuntu 26.04 and others with
+  systemd 258+), each command gets a `── time  directory ──` header and failed commands
+  an `[exit N]` line.
+
+### Added
+- **`gukab --clean-log <PATH>`** converts logs written by earlier versions into
+  readable `<name>.clean.log` copies — one file, or every log under a folder (e.g.
+  `~/.config/gukab/log`). The original files are left untouched.
+
 ## [2.0.2] - 2026-11-09
 
 ### Security

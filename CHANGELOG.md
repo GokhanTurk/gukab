@@ -3,7 +3,7 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-12
 
 ### Security
 - **`russh` 0.64.1 → 0.65.1** for

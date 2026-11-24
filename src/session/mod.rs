@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::config::{CredentialName, Expect, Macro};
+use crate::ssh::overlay::RemoteScreen;
 use crate::ssh::SshError;
 
 /// One chunk of bytes received from the remote/device. `is_stderr` marks SSH
@@ -30,6 +31,38 @@ pub trait Transport {
     async fn resize(&mut self, _cols: u16, _rows: u16) -> Result<(), SshError> {
         Ok(())
     }
+    /// Make a full-screen remote program repaint (after a popup drew over it). SSH
+    /// shrinks the PTY by a row (SIGWINCH) and returns `true`: the session then
+    /// calls [`Self::redraw_finish`] once the program has redrawn at that size —
+    /// both sizes sent back to back would look unchanged to a program that only
+    /// compares sizes when it draws (ratatui). Serial has no PTY: nothing to do.
+    async fn redraw_start(&mut self) -> Result<bool, SshError> {
+        Ok(false)
+    }
+    /// Restore the real size after [`Self::redraw_start`]; repaints again.
+    async fn redraw_finish(&mut self) -> Result<(), SshError> {
+        Ok(())
+    }
+}
+
+/// What the session loop does after handling typed input.
+#[derive(Debug, PartialEq)]
+enum Flow {
+    Continue,
+    /// A full-screen program is repainting at a nudged size; restore the size
+    /// when it has (see [`Transport::redraw_start`]).
+    Repaint,
+    End,
+}
+
+/// Longest wait for the remote to repaint at the nudged size before the real size
+/// is restored anyway (a program that never clears its screen).
+const REPAINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Does remote output contain a full-screen clear (`CSI 2J`)? ratatui, ncurses and
+/// nvim all start a resize repaint with one.
+fn clears_screen(bytes: &[u8]) -> bool {
+    bytes.windows(4).any(|w| w == b"\x1b[2J")
 }
 
 /// Optional live control surface for a serial session (baud switching). `None`
@@ -71,11 +104,16 @@ pub fn paste_credentials(
 }
 
 /// The current output line with escape sequences stripped — enough to tell whether
-/// the remote is asking for a password right now (the cursor sits after the prompt).
+/// the remote is asking for a password right now (the cursor sits after the prompt) —
+/// plus the remote's screen modes (alternate screen, cursor visibility) taken from
+/// the same stream.
 #[derive(Default)]
 struct PromptTail {
     line: Vec<u8>,
     esc: EscState,
+    /// Parameter bytes of the CSI sequence being read.
+    csi: Vec<u8>,
+    screen: RemoteScreen,
 }
 
 #[derive(Default, Clone, Copy, PartialEq)]
@@ -89,6 +127,8 @@ enum EscState {
 
 /// Longest line kept; a prompt is short, so older bytes are dropped.
 const PROMPT_TAIL_CAP: usize = 512;
+/// Longest CSI parameter string kept (`?1049;25` is 8).
+const CSI_PARAM_CAP: usize = 32;
 
 impl PromptTail {
     fn push(&mut self, bytes: &[u8]) {
@@ -111,12 +151,23 @@ impl PromptTail {
                     EscState::Text
                 }
                 (EscState::Text, _) => EscState::Text,
-                (EscState::Esc, b'[') => EscState::Csi,
+                (EscState::Esc, b'[') => {
+                    self.csi.clear();
+                    EscState::Csi
+                }
                 (EscState::Esc, b']') => EscState::Osc,
                 (EscState::Esc, _) => EscState::Text,
                 // CSI ends with a final byte in 0x40..=0x7e.
-                (EscState::Csi, 0x40..=0x7e) => EscState::Text,
-                (EscState::Csi, _) => EscState::Csi,
+                (EscState::Csi, 0x40..=0x7e) => {
+                    self.csi_final(b);
+                    EscState::Text
+                }
+                (EscState::Csi, b) => {
+                    if self.csi.len() < CSI_PARAM_CAP {
+                        self.csi.push(b);
+                    }
+                    EscState::Csi
+                }
                 // OSC ends with BEL (or ST, whose ESC restarts the state machine).
                 (EscState::Osc, 0x07) => EscState::Text,
                 (EscState::Osc, 0x1b) => EscState::Esc,
@@ -125,9 +176,37 @@ impl PromptTail {
         }
     }
 
+    /// Track the DEC private modes gukab's popups care about (`CSI ? … h/l`).
+    fn csi_final(&mut self, fin: u8) {
+        let on = match fin {
+            b'h' => true,
+            b'l' => false,
+            _ => return,
+        };
+        let Some(params) = self.csi.strip_prefix(b"?") else {
+            return;
+        };
+        for p in params.split(|&b| b == b';') {
+            match p {
+                b"1049" | b"1047" | b"47" => {
+                    self.screen.alt = on;
+                    // Either screen's last line says nothing about the other one.
+                    self.line.clear();
+                }
+                b"25" => self.screen.cursor_hidden = !on,
+                _ => {}
+            }
+        }
+    }
+
     /// Does the current line look like a password prompt (`Password:`,
     /// `[sudo] password for x:`, `[sudo] x için parola:`, `Enter passphrase:`)?
+    /// Never inside a full-screen program: the cursor moves anywhere there, so the
+    /// "current line" is not where the user is typing.
     fn looks_like_password_prompt(&self) -> bool {
+        if self.screen.alt {
+            return false;
+        }
         let text = String::from_utf8_lossy(&self.line).to_lowercase();
         let text = text.trim_end();
         text.ends_with(':')
@@ -375,15 +454,32 @@ pub async fn run_session<T: Transport>(
         transport.resize(cols, rows).await?;
     }
 
+    // Set while a full-screen program repaints at a nudged size: when to restore
+    // the real size at the latest.
+    let mut repaint_deadline: Option<tokio::time::Instant> = None;
+
     loop {
         tokio::select! {
             (cols, rows) = resize.next() => {
                 transport.resize(cols, rows).await?;
             }
+            () = async {
+                match repaint_deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                repaint_deadline = None;
+                transport.redraw_finish().await?;
+            }
             incoming = transport.recv() => {
                 match incoming {
                     Some(Incoming { bytes, is_stderr }) => {
                         prompt.push(&bytes);
+                        if repaint_deadline.is_some() && clears_screen(&bytes) {
+                            repaint_deadline = None;
+                            transport.redraw_finish().await?;
+                        }
                         if is_stderr {
                             // stderr: display raw, log, but do not colorize or scan.
                             stdout.write_all(&bytes).await?;
@@ -418,12 +514,17 @@ pub async fn run_session<T: Transport>(
                             None => None,
                         };
                         let ctx = PickerContext { macros, credentials, escape, prompt: &prompt };
-                        if !forward_stdin(
+                        match forward_stdin(
                             &bytes, &mut keys, &ctx, transport, automations, &mut rx, baud_ref,
                         )
                         .await?
                         {
-                            break;
+                            Flow::Continue => {}
+                            Flow::Repaint => {
+                                repaint_deadline =
+                                    Some(tokio::time::Instant::now() + REPAINT_TIMEOUT);
+                            }
+                            Flow::End => break,
                         }
                     }
                     None => break,
@@ -692,9 +793,6 @@ async fn scan_and_respond<T: Transport>(
     Ok(())
 }
 
-/// Forward typed bytes to the transport, intercepting the Ctrl+G escape prefix
-/// (macro prompt, which on serial also offers "cycle baud"). Returns `Ok(false)`
-/// if the session should end.
 /// What the `Ctrl+G` picker offers, plus the output line used to check for a
 /// password prompt before pasting.
 struct PickerContext<'a> {
@@ -704,6 +802,8 @@ struct PickerContext<'a> {
     prompt: &'a PromptTail,
 }
 
+/// Forward typed bytes to the transport, intercepting the Ctrl+G escape prefix
+/// (macro prompt, which on serial also offers "cycle baud").
 async fn forward_stdin<T: Transport>(
     bytes: &[u8],
     keys: &mut KeyScanner,
@@ -712,13 +812,13 @@ async fn forward_stdin<T: Transport>(
     automations: &mut Vec<Automation>,
     rx: &mut Receiver<Vec<u8>>,
     baud: Option<&mut dyn BaudControl>,
-) -> Result<bool, SshError> {
+) -> Result<Flow, SshError> {
     // Pass straight through unless the escape prefix was typed (a BEL ending a
     // terminal reply doesn't count).
     let esc = ctx.escape.byte();
     let Some(pos) = keys.find(bytes, esc) else {
         transport.write(bytes).await?;
-        return Ok(true);
+        return Ok(Flow::Continue);
     };
 
     // Send everything before the prefix verbatim.
@@ -735,34 +835,48 @@ async fn forward_stdin<T: Transport>(
         if !tail.is_empty() {
             transport.write(tail).await?;
         }
-        return Ok(true);
+        return Ok(Flow::Continue);
     }
 
     // Open the fuzzy macro picker; on serial it also pins a "baud rate" entry
     // showing the current baud. Any bytes after the prefix seed the query.
-    let baud_now = baud.as_ref().map(|b| b.current());
-    let macros = ctx.macros;
-    match crate::ssh::macro_picker::pick(macros, ctx.credentials, ctx.escape, rx, rest, baud_now)
-        .await
-    {
+    let screen = ctx.prompt.screen;
+    let picker = crate::ssh::macro_picker::Context {
+        macros: ctx.macros,
+        credentials: ctx.credentials,
+        escape: ctx.escape,
+        baud_now: baud.as_ref().map(|b| b.current()),
+        screen,
+        confirm_paste: !ctx.prompt.looks_like_password_prompt(),
+    };
+    let pick = crate::ssh::macro_picker::pick(&picker, rx, rest).await;
+    if pick == crate::ssh::macro_picker::Pick::Disconnect {
+        return Ok(Flow::End);
+    }
+    // A full-screen remote program was drawn over: make it repaint before anything
+    // the pick sends reaches it.
+    let flow = if screen.alt && transport.redraw_start().await? {
+        Flow::Repaint
+    } else {
+        Flow::Continue
+    };
+    match pick {
         // The escape key again inside the picker: close it and send the key itself,
         // so the key itself stays reachable.
         crate::ssh::macro_picker::Pick::SendEscape => {
             transport.write(&[esc][..]).await?;
-            Ok(true)
         }
         crate::ssh::macro_picker::Pick::Baud => {
             // Open the baud chooser (pick a preset or type a custom rate).
             if let Some(ctl) = baud
-                && let Some(n) = crate::ssh::baud_picker::choose(rx, ctl.current()).await
+                && let Some(n) = crate::ssh::baud_picker::choose(rx, ctl.current(), screen).await
             {
                 ctl.set_baud(n);
                 local_notice(&format!("baud → {n}"));
             }
-            Ok(true)
         }
         crate::ssh::macro_picker::Pick::Run(key) => {
-            if let Some(m) = macros.iter().find(|m| m.key == key) {
+            if let Some(m) = ctx.macros.iter().find(|m| m.key == key) {
                 // Re-arm this macro's expects for one firing each: drop any
                 // copies from a previous run (or from on_connect) so rules
                 // never accumulate, then arm fresh ones.
@@ -777,42 +891,16 @@ async fn forward_stdin<T: Transport>(
                     transport.write(payload.as_bytes()).await?;
                 }
             }
-            Ok(true)
         }
-        crate::ssh::macro_picker::Pick::Paste(reference) => {
-            // Pasting where nothing asks for a password would echo the secret on
-            // screen, into the session log and the remote shell history — so ask
-            // first unless the cursor sits after a password prompt.
-            if !ctx.prompt.looks_like_password_prompt() && !confirm_paste(&reference, rx).await {
-                local_notice("paste cancelled");
-                return Ok(true);
-            }
-            match read_secret(&reference) {
-                // Typed as if from the keyboard; no Enter — the user confirms.
-                Ok(secret) => transport.write(secret.as_bytes()).await?,
-                Err(e) => local_notice(&format!("credential '{reference}' unavailable: {e}")),
-            }
-            Ok(true)
-        }
-        crate::ssh::macro_picker::Pick::Cancel => Ok(true),
-        crate::ssh::macro_picker::Pick::Disconnect => Ok(false),
+        // Already confirmed inside the picker when no password prompt was visible.
+        crate::ssh::macro_picker::Pick::Paste(reference) => match read_secret(&reference) {
+            // Typed as if from the keyboard; no Enter — the user confirms.
+            Ok(secret) => transport.write(secret.as_bytes()).await?,
+            Err(e) => local_notice(&format!("credential '{reference}' unavailable: {e}")),
+        },
+        crate::ssh::macro_picker::Pick::Cancel | crate::ssh::macro_picker::Pick::Disconnect => {}
     }
-}
-
-/// Ask on the local terminal whether to paste although no password prompt is
-/// visible. Only `y`/`Y` confirms; anything else (including Enter) cancels.
-async fn confirm_paste(reference: &str, rx: &mut Receiver<Vec<u8>>) -> bool {
-    use std::io::Write;
-    let mut out = std::io::stdout();
-    let _ = write!(
-        out,
-        "\r\n[gukab] no password prompt on screen — paste '{reference}' anyway? [y/N] "
-    );
-    let _ = out.flush();
-    let yes = matches!(rx.recv().await.as_deref(), Some([b'y' | b'Y']));
-    let _ = write!(out, "\r\n");
-    let _ = out.flush();
-    yes
+    Ok(flow)
 }
 
 /// Read a secret from the OS keychain at the moment it is pasted. Never cached; the
@@ -897,15 +985,33 @@ mod tests {
         assert_eq!(list.len(), 2);
     }
 
-    #[tokio::test]
-    async fn paste_without_a_prompt_needs_an_explicit_yes() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
-        tx.send(b"y".to_vec()).await.unwrap();
-        assert!(confirm_paste("srv", &mut rx).await);
-        for answer in [&b"n"[..], b"\r", b"yes"] {
-            tx.send(answer.to_vec()).await.unwrap();
-            assert!(!confirm_paste("srv", &mut rx).await, "{answer:?} must cancel");
-        }
+    #[test]
+    fn full_screen_programs_are_tracked_and_never_count_as_a_prompt() {
+        let mut t = tail(&[b"$ htop\r\n\x1b[?1049h\x1b[?25l"]);
+        assert_eq!(t.screen, RemoteScreen { alt: true, cursor_hidden: true });
+        // A "Password:" drawn somewhere on a full screen is not a prompt.
+        t.push(b"\x1b[5;10HPassword: ");
+        assert!(!t.looks_like_password_prompt());
+        // Split across reads, combined parameters, and the older mode numbers.
+        t.push(b"\x1b[?10");
+        t.push(b"49;25l");
+        assert_eq!(t.screen, RemoteScreen { alt: false, cursor_hidden: true });
+        t.push(b"\x1b[?25h");
+        assert_eq!(t.screen, RemoteScreen::default());
+        t.push(b"\x1b[?47h");
+        assert!(t.screen.alt);
+        t.push(b"\x1b[?1047l[sudo] password for g: ");
+        assert!(!t.screen.alt && t.looks_like_password_prompt());
+        // Other private modes (bracketed paste) change nothing.
+        t.push(b"\x1b[?2004h");
+        assert!(!t.screen.alt && t.looks_like_password_prompt());
+    }
+
+    #[test]
+    fn a_resize_repaint_is_recognized_by_its_screen_clear() {
+        assert!(clears_screen(b"\x1b[?2026h\x1b[2J\x1b[1;1Hdata"));
+        assert!(clears_screen(b"\x1b[H\x1b[2J"));
+        assert!(!clears_screen(b"\x1b[2K\x1b[5;1H12:07"));
     }
 
     #[test]
@@ -938,10 +1044,11 @@ mod tests {
         let (_tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
         let mut autos = Vec::new();
         let mut keys = KeyScanner::default();
-        assert!(
+        assert_eq!(
             forward_stdin(bytes, &mut keys, &ctx, &mut t, &mut autos, &mut rx, None)
                 .await
-                .unwrap()
+                .unwrap(),
+            Flow::Continue
         );
         t.written
     }

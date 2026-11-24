@@ -1,14 +1,13 @@
 //! Mid-session fuzzy macro picker.
 //!
-//! Opened from the `Ctrl+G` escape prefix during an SSH session. It briefly
-//! switches to the alternate screen, draws a small centered ratatui popup
-//! (search box + fuzzy-filtered macro list), then restores the live session
-//! screen. Input comes from the same stdin mpsc channel the io_loop uses.
-
-use std::io::Write as _;
+//! Opened from the `Ctrl+G` escape prefix during an SSH session. It draws a small
+//! centered ratatui popup (search box + fuzzy-filtered macro list) over the session
+//! (see [`crate::ssh::overlay`]), then hands the screen back. Input comes from the
+//! same stdin mpsc channel the io_loop uses. A paste that needs confirmation asks
+//! inside the same popup.
 
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -23,6 +22,7 @@ use tokio::sync::mpsc::Receiver;
 use crate::config::Macro;
 use crate::fuzzy::fuzzy_score;
 use crate::session::{EscapeKey, PasteCredential};
+use crate::ssh::overlay::{self, RemoteScreen};
 
 /// Outcome of the picker.
 #[derive(Debug, PartialEq)]
@@ -40,12 +40,6 @@ pub enum Pick {
     /// End the SSH session.
     Disconnect,
 }
-
-// Reset SGR after switching: the remote (e.g. nvim mid-redraw) may have left an
-// attribute such as undercurl set, and ratatui assumes a clean pen. Leaving the
-// alternate screen restores the remote's cursor and attributes.
-const ENTER_ALT: &[u8] = b"\x1b[?1049h\x1b[0m";
-const LEAVE_ALT: &[u8] = b"\x1b[?1049l";
 
 /// One selectable line of the picker.
 #[derive(Debug, Clone, Copy)]
@@ -65,66 +59,71 @@ impl Row<'_> {
     }
 }
 
+/// What the picker offers and how it must draw.
+pub struct Context<'a> {
+    pub macros: &'a [Macro],
+    /// Pasteable keyring entries.
+    pub credentials: &'a [PasteCredential],
+    pub escape: EscapeKey,
+    /// Serial sessions: pins a "baud rate" entry showing the current baud.
+    pub baud_now: Option<u32>,
+    /// The remote's screen modes (full-screen program or not).
+    pub screen: RemoteScreen,
+    /// No password prompt is visible: a credential must be confirmed with `y`
+    /// before it is pasted.
+    pub confirm_paste: bool,
+}
+
 /// Show the picker and return the user's choice. `seed` pre-fills the query with
-/// any bytes typed in the same chunk as the escape prefix. `baud_now` — when set
-/// (serial sessions) — pins a "cycle baud" entry at the top of the empty picker,
-/// showing the current baud. `credentials` are pasteable keyring entries.
-pub async fn pick(
-    macros: &[Macro],
-    credentials: &[PasteCredential],
-    escape: EscapeKey,
-    rx: &mut Receiver<Vec<u8>>,
-    seed: &[u8],
-    baud_now: Option<u32>,
-) -> Pick {
-    // Switch to the alternate screen so we can draw over the session and restore
-    // it untouched afterwards.
-    {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(ENTER_ALT);
-        let _ = out.flush();
-    }
-
-    let result = run(macros, credentials, escape, rx, seed, baud_now).await;
-
-    {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(LEAVE_ALT);
-        let _ = out.flush();
-    }
+/// any bytes typed in the same chunk as the escape prefix.
+pub async fn pick(ctx: &Context<'_>, rx: &mut Receiver<Vec<u8>>, seed: &[u8]) -> Pick {
+    overlay::open(ctx.screen);
+    let result = match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
+        Ok(mut terminal) => run(&mut terminal, ctx, rx, seed).await,
+        Err(_) => Pick::Cancel,
+    };
+    overlay::close(ctx.screen);
     result
 }
 
-async fn run(
-    macros: &[Macro],
-    credentials: &[PasteCredential],
-    escape: EscapeKey,
+async fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
+    ctx: &Context<'_>,
     rx: &mut Receiver<Vec<u8>>,
     seed: &[u8],
-    baud_now: Option<u32>,
 ) -> Pick {
-    let backend = CrosstermBackend::new(std::io::stdout());
-    let mut terminal = match Terminal::new(backend) {
-        Ok(t) => t,
-        Err(_) => return Pick::Cancel,
-    };
-
+    let (macros, credentials, baud_now) = (ctx.macros, ctx.credentials, ctx.baud_now);
     let mut query = String::from_utf8_lossy(seed)
         .chars()
         .filter(|c| !c.is_control())
         .collect::<String>();
     let mut selected = 0usize;
+    // A credential waiting for `y` (no password prompt on screen).
+    let mut confirming: Option<String> = None;
 
     loop {
         let list = rows(macros, credentials, &query, baud_now);
         if selected >= list.len() {
             selected = list.len().saturating_sub(1);
         }
-        let _ = terminal.draw(|f| draw(f, &query, &list, selected, credentials.is_empty()));
+        let _ = match &confirming {
+            Some(reference) => terminal.draw(|f| draw_confirm(f, reference)),
+            None => terminal.draw(|f| draw(f, &query, &list, selected, credentials.is_empty())),
+        };
 
         let Some(chunk) = rx.recv().await else {
             return Pick::Cancel;
         };
+
+        // Pasting where nothing asks for a password would echo the secret on
+        // screen, into the session log and the remote shell history. Only a lone
+        // `y` pastes; anything else goes back to the list.
+        if let Some(reference) = confirming.take() {
+            if matches!(chunk.as_slice(), [b'y' | b'Y']) {
+                return Pick::Paste(reference);
+            }
+            continue;
+        }
 
         // Whole-chunk control sequences first (arrows / lone Esc).
         match chunk.as_slice() {
@@ -144,11 +143,17 @@ async fn run(
 
         for &b in &chunk {
             match b {
-                b if b == escape.byte() => return Pick::SendEscape,
+                b if b == ctx.escape.byte() => return Pick::SendEscape,
                 0x04 => return Pick::Disconnect, // Ctrl+D
                 b'\r' | b'\n' => {
                     let list = rows(macros, credentials, &query, baud_now);
-                    return list.get(selected).map_or(Pick::Cancel, Row::pick);
+                    match list.get(selected).map_or(Pick::Cancel, Row::pick) {
+                        Pick::Paste(reference) if ctx.confirm_paste => {
+                            confirming = Some(reference);
+                            break;
+                        }
+                        pick => return pick,
+                    }
                 }
                 0x7f | 0x08 => {
                     query.pop();
@@ -199,13 +204,51 @@ fn rows<'a>(
     scored.into_iter().map(|(_, r)| r).collect()
 }
 
-fn draw(f: &mut ratatui::Frame, query: &str, list: &[Row], selected: usize, no_credentials: bool) {
-    let area = f.area();
+/// The popup's frame, centered in `area`.
+fn popup_rect(area: Rect) -> Rect {
     let width = area.width.min(54);
     let height = area.height.min(16);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect::new(x, y, width, height);
+    Rect::new(x, y, width, height)
+}
+
+/// The paste question, in place of the list.
+fn draw_confirm(f: &mut ratatui::Frame, reference: &str) {
+    let popup = popup_rect(f.area());
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Paste password? ")
+        .title_alignment(Alignment::Center);
+    f.render_widget(block, popup);
+    let inner = popup.inner(Margin { horizontal: 2, vertical: 1 });
+    let dim = Style::default().fg(Color::DarkGray);
+    let text = vec![
+        Line::from(Span::styled(
+            "No password prompt on screen.",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("Pasting into a shell or editor shows the", dim)),
+        Line::from(Span::styled("secret on screen, in the log and history.", dim)),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("Paste "),
+            Span::styled(
+                format!("🔑 {reference}"),
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" anyway?"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("y paste · any other key back", dim)),
+    ];
+    f.render_widget(Paragraph::new(text).alignment(Alignment::Center), inner);
+}
+
+fn draw(f: &mut ratatui::Frame, query: &str, list: &[Row], selected: usize, no_credentials: bool) {
+    let popup = popup_rect(f.area());
 
     f.render_widget(Clear, popup);
     let block = Block::default()
@@ -404,6 +447,61 @@ mod tests {
         let bottom = render(&list, list.len() - 1);
         assert!(bottom.contains("↑ 3 more") && bottom.contains("schrod"), "{bottom}");
         assert_eq!(bottom.matches(" more ").count(), 1, "only the ↑ counter: {bottom}");
+    }
+
+    fn screen_text(terminal: &Terminal<ratatui::backend::TestBackend>) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Run the picker on a test terminal with `keys` queued as separate reads.
+    async fn run_keys(creds: &[PasteCredential], confirm_paste: bool, keys: &[&[u8]]) -> (Pick, String) {
+        let ctx = Context {
+            macros: &[],
+            credentials: creds,
+            escape: EscapeKey::DEFAULT,
+            baud_now: None,
+            screen: RemoteScreen::default(),
+            confirm_paste,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        for k in keys {
+            tx.send(k.to_vec()).await.expect("send");
+        }
+        drop(tx);
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("terminal");
+        let pick = run(&mut terminal, &ctx, &mut rx, b"").await;
+        (pick, screen_text(&terminal))
+    }
+
+    #[tokio::test]
+    async fn paste_at_a_password_prompt_needs_no_confirmation() {
+        let creds = [cred("srv", true)];
+        let (pick, _) = run_keys(&creds, false, &[b"\r"]).await;
+        assert_eq!(pick, Pick::Paste("srv".into()));
+    }
+
+    #[tokio::test]
+    async fn paste_without_a_prompt_asks_inside_the_popup() {
+        let creds = [cred("srv", true)];
+        let (pick, _) = run_keys(&creds, true, &[b"\r", b"y"]).await;
+        assert_eq!(pick, Pick::Paste("srv".into()));
+        // The question is drawn in the popup (the last frame before input ran out).
+        let (pick, screen) = run_keys(&creds, true, &[b"\r"]).await;
+        assert_eq!(pick, Pick::Cancel);
+        assert!(screen.contains("anyway?") && screen.contains("srv"), "{screen}");
+        // Anything but a lone y goes back to the list; Esc then closes it.
+        for answer in [&b"n"[..], b"\r", b"yes"] {
+            let (pick, screen) = run_keys(&creds, true, &[b"\r", answer]).await;
+            assert_eq!(pick, Pick::Cancel, "{answer:?}");
+            assert!(screen.contains("Macros") && !screen.contains("anyway?"), "{screen}");
+        }
+        let (pick, _) = run_keys(&creds, true, &[b"\r", b"n", b"\r", b"y"]).await;
+        assert_eq!(pick, Pick::Paste("srv".into()));
     }
 
     #[test]

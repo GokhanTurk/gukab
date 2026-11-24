@@ -3,6 +3,18 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+- **`Ctrl+G` over a full-screen remote program no longer breaks the screen.** Opening
+  the picker inside nvim, htop or a ratatui panel (especially under tmux) dropped the
+  terminal back to the main screen when it closed. gukab now notices that the remote is
+  on the alternate screen, draws the picker over it and makes the program repaint
+  afterwards (SSH).
+- **The "paste anyway?" question is asked inside the picker** instead of printed over
+  the session. Inside a full-screen program a paste always asks, since a `Password:`
+  drawn somewhere on screen is not a prompt.
+
 ## [2.1.0] - 2026-11-12
 
 ### Security

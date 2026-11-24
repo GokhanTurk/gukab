@@ -3,10 +3,8 @@
 //! Opened from the `Ctrl+G` picker's "baud rate…" entry. A single editable value
 //! (pre-filled with the current baud) plus a preset list: `↑↓` picks a preset
 //! straight into the field, or type any custom rate. `Enter` applies, `Esc` cancels.
-//! Like the macro picker it briefly uses the alternate screen and reads from the
-//! same stdin mpsc channel.
-
-use std::io::Write as _;
+//! Like the macro picker it draws over the session through [`crate::ssh::overlay`]
+//! and reads from the same stdin mpsc channel.
 
 use ratatui::{
     backend::CrosstermBackend,
@@ -19,26 +17,13 @@ use ratatui::{
 use tokio::sync::mpsc::Receiver;
 
 use crate::serial::BAUD_PRESETS;
-
-// Reset SGR after switching: the remote (e.g. nvim mid-redraw) may have left an
-// attribute such as undercurl set, and ratatui assumes a clean pen. Leaving the
-// alternate screen restores the remote's cursor and attributes.
-const ENTER_ALT: &[u8] = b"\x1b[?1049h\x1b[0m";
-const LEAVE_ALT: &[u8] = b"\x1b[?1049l";
+use crate::ssh::overlay::{self, RemoteScreen};
 
 /// Show the chooser and return the selected baud, or `None` if cancelled.
-pub async fn choose(rx: &mut Receiver<Vec<u8>>, current: u32) -> Option<u32> {
-    {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(ENTER_ALT);
-        let _ = out.flush();
-    }
+pub async fn choose(rx: &mut Receiver<Vec<u8>>, current: u32, screen: RemoteScreen) -> Option<u32> {
+    overlay::open(screen);
     let result = run(rx, current).await;
-    {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(LEAVE_ALT);
-        let _ = out.flush();
-    }
+    overlay::close(screen);
     result
 }
 

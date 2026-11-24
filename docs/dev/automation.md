@@ -12,8 +12,19 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
   macro picker** popup ([src/ssh/macro_picker.rs](../../src/ssh/macro_picker.rs)): a
   centered search box + the macro list, filtered with the same fuzzy matcher as the host
   list. `↑↓` select, `Enter` runs, `Esc` cancels, `Ctrl+D` disconnects the session,
-  `Ctrl+G Ctrl+G` sends a literal `Ctrl+G`. The picker briefly uses the alternate screen
-  and restores the live session after. A macro's `send` may be **multi-line** (TOML
+  `Ctrl+G Ctrl+G` sends a literal `Ctrl+G`. The picker draws over the session through
+  `src/ssh/overlay.rs`: normally on the alternate screen, which restores the live
+  session after. If the remote program is already on the alternate screen (nvim, htop, a
+  ratatui panel — tracked from its output by `PromptTail`: `?1049`/`?1047`/`?47`, plus
+  `?25` cursor visibility), the switch is skipped (entering would be a no-op and leaving
+  would drop to the main screen under the program); the popup clears and draws over the
+  program, and on close `Transport::redraw_start` makes it repaint: SSH sends
+  `window-change` one row short (the kernel only signals SIGWINCH on a real change), and
+  the session restores the real size (`redraw_finish`) once the remote's output contains
+  a screen clear (`CSI 2J`), or after 1 s. Sending both sizes back to back does not work:
+  ratatui compares the size only when it draws, sees no change by then, and repaints
+  just the changed cells — leaving popup remnants. Serial has no PTY, so nothing is
+  sent. A macro's `send` may be **multi-line** (TOML
   triple-quoted string): each non-empty line is sent as its own command terminated by
   `\r` (Enter / `^M`).
 
@@ -44,7 +55,9 @@ Read this before touching [src/session/mod.rs](../../src/session/mod.rs),
   automatic is involved — expects never touch these rows. Before sending, a
   `PromptTail` (the current output line, escape sequences stripped) is checked: if it
   doesn't end in a password prompt (`password` / `passphrase` / `passcode` / `parola` /
-  `şifre` … `:`), `confirm_paste` asks `[y/N]` on the local terminal — pasting into a
+  `şifre` … `:`), the picker asks inside its own popup (`y` pastes, any other key goes back to the
+  list). While the remote is on the alternate screen the line is never trusted as a
+  prompt (the cursor moves anywhere there), so a paste always asks — pasting into a
   shell would echo the secret onto the screen, the session log and the remote history.
   The secret is never shown or logged by gukab itself; once handed to the transport
   (russh's buffers, the serial worker) it is outside gukab's control.

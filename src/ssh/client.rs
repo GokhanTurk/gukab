@@ -410,6 +410,22 @@ impl Transport for SshTransport<'_> {
         self.pty = (cols, rows);
         Ok(())
     }
+
+    /// The kernel signals SIGWINCH only when the size actually changes, so the PTY
+    /// is set one row short first; [`Self::redraw_finish`] restores it once the
+    /// program has repainted at that size.
+    async fn redraw_start(&mut self) -> Result<bool, SshError> {
+        let (cols, rows) = self.pty;
+        let nudge = if rows > 1 { rows - 1 } else { rows + 1 };
+        self.channel.window_change(cols as u32, nudge as u32, 0, 0).await?;
+        Ok(true)
+    }
+
+    async fn redraw_finish(&mut self) -> Result<(), SshError> {
+        let (cols, rows) = self.pty;
+        self.channel.window_change(cols as u32, rows as u32, 0, 0).await?;
+        Ok(())
+    }
 }
 
 /// Load a private key from `path` for public-key auth, decrypting it with

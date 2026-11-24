@@ -5,7 +5,6 @@ edition = "2024"
 description = "A terminal-only (TUI) SSH connection manager for network devices."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/GokhanTurk/gukab"
-homepage = "https://github.com/GokhanTurk/gukab"
 readme = "README.md"
 keywords = ["ssh", "tui", "terminal", "network", "cisco"]
 categories = ["command-line-utilities", "network-programming"]

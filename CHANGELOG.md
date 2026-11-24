@@ -3,7 +3,7 @@
 All notable changes to **gukab** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [2.1.1] - 2026-11-24
 
 ### Fixed
 - **`Ctrl+G` over a full-screen remote program no longer breaks the screen.** Opening
@@ -14,6 +14,10 @@ This project follows [Semantic Versioning](https://semver.org).
 - **The "paste anyway?" question is asked inside the picker** instead of printed over
   the session. Inside a full-screen program a paste always asks, since a `Password:`
   drawn somewhere on screen is not a prompt.
+
+### Changed
+- Removed the unused `nucleo` dependency (fuzzy matching has long been gukab's own
+  code), so builds compile less. No behavior change.
 
 ## [2.1.0] - 2026-11-12
 
